@@ -1,5 +1,7 @@
 venv/
 .venv/
+dev/
+.dev/
 __pycache__/
 *.pyc
 data/demonstrations/*
@@ -11,6 +13,7 @@ wandb/
 *.engine
 *.pt
 .DS_Store
+.vscode
 ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
