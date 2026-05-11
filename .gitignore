@@ -1,0 +1,16 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+data/demonstrations/*
+data/checkpoints/*
+!data/demonstrations/.gitkeep
+!data/checkpoints/.gitkeep
+wandb/
+*.onnx
+*.engine
+*.pt
+.DS_Store
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/

@@ -1,0 +1,9 @@
+torch>=2.1
+mujoco>=3.0
+gymnasium>=0.29
+numpy<2.0
+h5py
+pyyaml
+wandb
+tensorboard
+matplotlib
