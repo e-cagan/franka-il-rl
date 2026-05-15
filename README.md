@@ -38,12 +38,12 @@ franka-il-rl/
 ### Phase 1 — Foundations & Infrastructure
 
 - [x] **Week 1** — Environment setup, MuJoCo sanity check, RL theory grounding
-- [x] **Week 2** — `FrankaPickPlaceEnv` with Gymnasium API, observation & action space design
+- [x] **Week 2** — Custom Franka env attempt (archived; see Project Notes)
 - [ ] **Week 3** — Fetch wrapper, scripted expert, demonstration collection
-     - [x] gymnasium-robotics setup, FetchPickAndPlaceWrapper
-     - [ ] Scripted expert (state machine with EE delta actions)
-     - [ ] Demonstration collection pipeline (HDF5)
-     - [ ] Train/val/test split
+  - [x] gymnasium-robotics setup, `FetchPickPlaceWrapper`
+  - [ ] Scripted expert (state machine with EE delta actions)
+  - [ ] Demonstration collection pipeline (HDF5)
+  - [ ] Train/val/test split
 - [ ] **Week 4** — Data pipeline, evaluation harness, baseline metrics, W&B integration
 
 ### Phase 2 — Algorithms
@@ -74,18 +74,19 @@ Developed and tested on:
 
 *Setup instructions and reproduction steps will be documented progressively as each milestone completes.*
 
-## Project Notes
-
-**Week 3 pivot (May 2026)**: Initial attempt used a custom MuJoCo environment
-with Franka Panda and mink IK. After significant debugging effort with PD
-controller instability and IK convergence issues, switched to the standard
-`gymnasium-robotics` FetchPickAndPlace environment. This trades robot
-specificity for a battle-tested baseline, allowing focus on the core IL/RL
-algorithms (BC, DAgger, SAC) and deployment pipeline.
-
 ## Results
 
 *Experiment results, ablation tables, and learning curves will appear here as Phase 2 progresses.*
+
+## Project Notes
+
+**Week 3 pivot (May 2026)**: Initial attempt used a custom MuJoCo environment
+with Franka Panda and mink IK. After significant debugging of PD controller
+instability and IK convergence issues, switched to the standard
+`gymnasium-robotics` FetchPickAndPlace environment. This trades robot
+specificity for a battle-tested baseline, allowing focus on the core IL/RL
+algorithms (BC, DAgger, SAC) and the deployment pipeline. The legacy
+Franka code is preserved under `*_legacy.py` suffixes for reference.
 
 ## License
 
