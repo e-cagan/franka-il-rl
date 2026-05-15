@@ -38,7 +38,7 @@ franka-il-rl/
 ### Phase 1 — Foundations & Infrastructure
 
 - [x] **Week 1** — Environment setup, MuJoCo sanity check, RL theory grounding
-- [ ] **Week 2** — `FrankaPickPlaceEnv` with Gymnasium API, observation & action space design
+- [x] **Week 2** — `FrankaPickPlaceEnv` with Gymnasium API, observation & action space design
 - [ ] **Week 3** — Scripted expert (state machine + IK), demonstration collection pipeline
 - [ ] **Week 4** — Data pipeline, evaluation harness, baseline metrics, W&B integration
 
