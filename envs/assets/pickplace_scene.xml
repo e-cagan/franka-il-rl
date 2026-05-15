@@ -3,6 +3,9 @@
   <!-- Path resolved at load-time by os.path.join in Python -->
   <include file="panda.xml"/>
 
+  <!-- Disable gravity for cleaner position control -->
+  <option gravity="0 0 0"/>
+
   <!-- Statistics hint for the viewer's default camera framing -->
   <statistic center="0.4 0 0.4" extent="1.2"/>
 

@@ -70,6 +70,15 @@ Developed and tested on:
 
 *Setup instructions and reproduction steps will be documented progressively as each milestone completes.*
 
+## Project Notes
+
+**Week 3 pivot (May 2026)**: Initial attempt used a custom MuJoCo environment
+with Franka Panda and mink IK. After significant debugging effort with PD
+controller instability and IK convergence issues, switched to the standard
+`gymnasium-robotics` FetchPickAndPlace environment. This trades robot
+specificity for a battle-tested baseline, allowing focus on the core IL/RL
+algorithms (BC, DAgger, SAC) and deployment pipeline.
+
 ## Results
 
 *Experiment results, ablation tables, and learning curves will appear here as Phase 2 progresses.*

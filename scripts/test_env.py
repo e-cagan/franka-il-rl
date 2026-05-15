@@ -9,23 +9,40 @@ if project_root not in sys.path:
 
 import time
 import numpy as np
+import mujoco
 from envs.franka_pickplace import FrankaPickPlaceEnv
+from experts.ik import FrankaIK
 
 env = FrankaPickPlaceEnv()
-try:
-    for ep in range(5):
-        obs, _ = env.reset(seed=ep)
-        ep_reward = 0
-        ep_len = 0
-        for i in range(200):
-            action = env.action_space.sample()
-            obs, reward, term, trunc, info = env.step(action)
-            ep_reward += reward
-            ep_len += 1
-            if term or trunc:
-                break
-        print(f"Episode {ep}: length={ep_len}, total_reward={ep_reward:.2f}, "
-            f"success={info.get('is_success', 0)}")
-finally:
-    env.close()
-    time.sleep(0.2)  # GLFW cleanup
+env.reset(seed=0)
+ik = FrankaIK(env.model)
+
+env.render()
+
+# Bir dizi hedef pose; her birine git, 1 saniye bekle
+targets = [
+    [0.4, 0.0, 0.55],   # önde, masaüstü
+    [0.5, 0.2, 0.55],   # sağa
+    [0.5, -0.2, 0.55],  # sola
+    [0.5, 0.0, 0.45],   # aşağı, küpe yakın
+]
+
+for tgt in targets:
+    print(f"Moving to {tgt}")
+    for _ in range(100):  # 100 control step ≈ 5 saniye
+        target_q = ik.solve(env.data, tgt)
+        
+        # Convert target_q to [-1, 1] action
+        low = env._ctrl_range[:7, 0]
+        high = env._ctrl_range[:7, 1]
+        arm_action = 2.0 * (target_q - low) / (high - low) - 1.0
+        gripper_action = np.array([1.0])  # open
+        action = np.concatenate([arm_action, gripper_action]).astype(np.float32)
+        
+        env.step(action)
+        env.render()
+        time.sleep(0.02)
+    
+    time.sleep(0.5)
+
+env.close()

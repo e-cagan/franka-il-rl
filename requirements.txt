@@ -3,6 +3,10 @@ mujoco>=3.0
 gymnasium>=0.29
 numpy<2.0
 h5py
+mink
+quadprog
+osqp
+gymnasium-robotics
 pyyaml
 wandb
 tensorboard
