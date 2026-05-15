@@ -68,4 +68,11 @@
             contype="0" conaffinity="0"/>
     </body>
   </worldbody>
+
+  <!-- Ready pose keyframe -->
+  <keyframe>
+      <key name="ready"
+          qpos="0 -0.785 0 -2.356 0 1.571 0.785 0.04 0.04
+                0.5 0 0.43 1 0 0 0"/>
+  </keyframe>
 </mujoco>

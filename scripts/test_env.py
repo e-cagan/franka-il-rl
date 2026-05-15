@@ -13,18 +13,19 @@ from envs.franka_pickplace import FrankaPickPlaceEnv
 
 env = FrankaPickPlaceEnv()
 try:
-    obs, _ = env.reset(seed=0)
-    env.render()
-    time.sleep(1.0)
-
-    for i in range(200):
-        action = env.action_space.sample()
-        obs, reward, terminated, truncated, info = env.step(action)
-        env.render()
-        time.sleep(0.05)
-        if terminated or truncated:
-            print(f"Episode ended at step {i}")
-            break
+    for ep in range(5):
+        obs, _ = env.reset(seed=ep)
+        ep_reward = 0
+        ep_len = 0
+        for i in range(200):
+            action = env.action_space.sample()
+            obs, reward, term, trunc, info = env.step(action)
+            ep_reward += reward
+            ep_len += 1
+            if term or trunc:
+                break
+        print(f"Episode {ep}: length={ep_len}, total_reward={ep_reward:.2f}, "
+            f"success={info.get('is_success', 0)}")
 finally:
     env.close()
     time.sleep(0.2)  # GLFW cleanup

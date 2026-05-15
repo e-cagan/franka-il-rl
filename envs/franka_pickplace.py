@@ -87,6 +87,9 @@ class FrankaPickPlaceEnv(gym.Env):
         self._ee_body_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, "hand"
         )
+        self._home_keyframe_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_KEY, "ready"
+        )
         self._object_qpos_addr = self.model.jnt_qposadr[self._object_joint_id]
         self._target_mocap_id = self.model.body_mocapid[self._target_body_id]
         
@@ -103,6 +106,7 @@ class FrankaPickPlaceEnv(gym.Env):
         
         # Reset to keyframe/defaults
         mujoco.mj_resetData(self.model, self.data)
+        mujoco.mj_resetDataKeyframe(self.model, self.data, self._home_keyframe_id)
         
         # Randomize object position on the table (within work region)
         obj_x = self.np_random.uniform(0.35, 0.55)
@@ -159,8 +163,11 @@ class FrankaPickPlaceEnv(gym.Env):
         # Assemble step return
         obs = self._get_obs()
         reward = self._compute_reward()
-        terminated, truncated = self._check_termination()
-        info = {}
+        terminated, truncated, success, failed = self._check_termination()
+        info = {
+            "is_success": float(success),
+            "is_failure": float(failed),
+        }
         
         return obs, reward, terminated, truncated, info
     
@@ -194,15 +201,61 @@ class FrankaPickPlaceEnv(gym.Env):
         
         return obs
     
+    def _is_grasped(self, ee_pos, obj_pos):
+        """
+        Heuristic grasp detection: object is near EE, lifted, gripper closed.
+        """
+        xy_dist = np.linalg.norm(ee_pos[:2] - obj_pos[:2])
+        obj_height = obj_pos[2]
+        gripper_open = self.data.qpos[7] + self.data.qpos[8]
+        
+        near = xy_dist < 0.05
+        lifted = obj_height > 0.43
+        closed = gripper_open < 0.04
+        
+        return near and lifted and closed
+    
     def _compute_reward(self):
-        # For now: return 0.0 (we'll design reward in Day 4)
-        # Just placeholder so step() works
-        return 0.0
+        ee_pos = self.data.xpos[self._ee_body_id]
+        obj_pos = self.data.xpos[self._object_body_id]
+        target_pos = self._target_pos
+        
+        ee_to_obj = np.linalg.norm(ee_pos - obj_pos)
+        obj_to_target = np.linalg.norm(obj_pos - target_pos)
+        
+        grasped = self._is_grasped(ee_pos, obj_pos)
+        
+        if not grasped:
+            # Reach phase: shape with negative distance to object
+            reward = -ee_to_obj
+        else:
+            # Transport phase: distance to target, plus a small bonus for grasping
+            reward = -obj_to_target + 0.25  # constant bias: grasping is "good"
+        
+        # Success bonus
+        if obj_to_target < 0.05 and obj_pos[2] > 0.41:  # at target, on table
+            reward += 10.0
+        
+        # Action regularization
+        action_norm = np.linalg.norm(self.data.ctrl)
+        reward -= 0.001 * action_norm ** 2
+        
+        return reward
     
     def _check_termination(self):
+        obj_pos = self.data.xpos[self._object_body_id]
+        obj_to_target = np.linalg.norm(obj_pos - self._target_pos)
+        
+        # Success: object at target, on table
+        success = obj_to_target < 0.05 and obj_pos[2] > 0.41
+        
+        # Failure: object fell off the table
+        failed = obj_pos[2] < 0.2
+        
+        terminated = bool(success or failed)
         truncated = self._step_count >= self.max_episode_steps
-        terminated = False  # success/failure logic (False for now)
-        return terminated, truncated
+        
+        return terminated, truncated, bool(success), bool(failed)
     
     def render(self):
         """Lazy-init passive viewer and sync it."""
