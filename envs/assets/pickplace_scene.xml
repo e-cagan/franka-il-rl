@@ -1,0 +1,71 @@
+<mujoco model="franka pickplace">
+  <!-- Include the Franka Panda model from menagerie -->
+  <!-- Path resolved at load-time by os.path.join in Python -->
+  <include file="panda.xml"/>
+
+  <!-- Statistics hint for the viewer's default camera framing -->
+  <statistic center="0.4 0 0.4" extent="1.2"/>
+
+  <!-- Visual settings copied from menagerie scene.xml -->
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="120" elevation="-20"/>
+  </visual>
+
+  <!-- Textures and materials -->
+  <asset>
+    <texture type="skybox" builtin="gradient"
+             rgb1="0.3 0.5 0.7" rgb2="0 0 0"
+             width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+             rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+             markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true"
+              texrepeat="5 5" reflectance="0.2"/>
+
+    <!-- Custom materials for our objects -->
+    <material name="table_mat" rgba="0.6 0.45 0.3 1.0"/>
+    <material name="cube_mat" rgba="0.85 0.2 0.2 1.0"/>
+    <material name="target_mat" rgba="0.2 0.85 0.2 0.4"/>
+  </asset>
+
+  <worldbody>
+    <!-- Global lighting -->
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+
+    <!-- Ground floor -->
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- Table: static body, no joint = welded to world -->
+    <body name="table" pos="0.5 0 0.2">
+      <geom name="table_geom"
+            type="box"
+            size="0.5 0.3 0.2"
+            material="table_mat"
+            contype="1" conaffinity="1"
+            friction="1.0 0.005 0.0001"/>
+    </body>
+
+    <!-- Manipulable object: cube with free joint -->
+    <body name="object" pos="0.5 0.0 0.45">
+      <freejoint name="object_freejoint"/>
+      <geom name="object_geom"
+            type="box"
+            size="0.025 0.025 0.025"
+            material="cube_mat"
+            mass="0.05"
+            contype="1" conaffinity="1"
+            friction="1.0 0.005 0.0001"/>
+    </body>
+
+    <!-- Target marker: visual only, no collision -->
+    <body name="target" pos="0.5 0.2 0.42" mocap="true">
+      <geom name="target_geom"
+            type="box"
+            size="0.03 0.03 0.005"
+            material="target_mat"
+            contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>
