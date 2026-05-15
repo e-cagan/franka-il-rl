@@ -39,7 +39,11 @@ franka-il-rl/
 
 - [x] **Week 1** — Environment setup, MuJoCo sanity check, RL theory grounding
 - [x] **Week 2** — `FrankaPickPlaceEnv` with Gymnasium API, observation & action space design
-- [ ] **Week 3** — Scripted expert (state machine + IK), demonstration collection pipeline
+- [ ] **Week 3** — Fetch wrapper, scripted expert, demonstration collection
+     - [x] gymnasium-robotics setup, FetchPickAndPlaceWrapper
+     - [ ] Scripted expert (state machine with EE delta actions)
+     - [ ] Demonstration collection pipeline (HDF5)
+     - [ ] Train/val/test split
 - [ ] **Week 4** — Data pipeline, evaluation harness, baseline metrics, W&B integration
 
 ### Phase 2 — Algorithms
