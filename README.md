@@ -44,7 +44,7 @@ franka-il-rl/
   - [x] Scripted expert (100% success rate)
   - [x] Demonstration collection pipeline (1000 episodes, HDF5)
   - [x] Train/val/test split (80/10/10)
-- [ ] **Week 4** — Data pipeline, evaluation harness, baseline metrics, W&B integration
+- [x] **Week 4** — Data pipeline, evaluation harness, baseline metrics, W&B integration
 
 ### Phase 2 — Algorithms
 
