@@ -62,7 +62,9 @@ class MLPPolicy(nn.Module):
         """
         self.eval()
         with torch.no_grad():
-            obs_tensor = torch.from_numpy(obs_numpy).float().unsqueeze(0)
+            # Get the device the model lives on
+            device = next(self.parameters()).device
+            obs_tensor = torch.from_numpy(obs_numpy).float().unsqueeze(0).to(device)
             action_tensor = self.forward(obs_tensor)
             action = action_tensor.squeeze(0).cpu().numpy()
         return action

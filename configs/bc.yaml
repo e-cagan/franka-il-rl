@@ -1,0 +1,31 @@
+# Behavioral Cloning baseline config
+
+# Data
+train_path: "data/demonstrations/demos_train.hdf5"
+val_path: "data/demonstrations/demos_val.hdf5"
+
+# Network
+hidden_sizes: [256, 256, 256]
+
+# Optimization
+lr: 3.0e-4
+weight_decay: 1.0e-5
+batch_size: 256
+epochs: 100
+
+# Eval
+eval_every: 5         # epochs
+eval_episodes: 20
+
+# Hardware
+device: "cuda"        # falls back to cpu if unavailable
+num_workers: 0
+
+# Logging
+run_name: "bc_baseline"
+wandb_project: "franka-il-rl"
+wandb_tags: ["bc", "fetch", "baseline"]
+wandb_group: "bc_baseline"
+
+# Checkpointing
+checkpoint_dir: "data/checkpoints/bc"

@@ -48,7 +48,7 @@ franka-il-rl/
 
 ### Phase 2 — Algorithms
 
-- [ ] **Week 5** — Behavioral Cloning implementation and training
+- [x] **Week 5** — Behavioral Cloning implementation and training
 - [ ] **Week 6** — BC ablation studies (demo count, network capacity, loss function)
 - [ ] **Week 7** — DAgger implementation with β-scheduling
 - [ ] **Week 8** — DAgger variants exploration, BC vs DAgger sample efficiency study
@@ -94,6 +94,14 @@ object spawns within the 5cm success threshold of the goal (no policy
 action required). This is documented for transparency; the effective
 "learning floor" for comparison is ~7%, while BC/DAgger/SAC should
 reach 80%+ to demonstrate clear value.
+
+**Week 5 (BC baseline)**: BC trained on 800 trajectories reached 100%
+success rate at epoch 30, plateauing through epoch 100. Mean episode
+return improved from -42 (early epochs, random-like) to -29 (faster
+than expert's -32). This unusually strong BC baseline is likely due to
+the short-horizon, state-based, low-DoF nature of FetchPickAndPlace;
+typical manipulation BC papers report 60-85%. Ablations in Week 6 will
+test robustness across seeds, demo counts, and network capacities.
 
 ## License
 
