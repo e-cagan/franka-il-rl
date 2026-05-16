@@ -88,6 +88,13 @@ specificity for a battle-tested baseline, allowing focus on the core IL/RL
 algorithms (BC, DAgger, SAC) and the deployment pipeline. The legacy
 Franka code is preserved under `*_legacy.py` suffixes for reference.
 
+**Random baseline note**: Random policy yields ~15% success rate on
+FetchPickAndPlace, of which ~8% stems from initial states where the
+object spawns within the 5cm success threshold of the goal (no policy
+action required). This is documented for transparency; the effective
+"learning floor" for comparison is ~7%, while BC/DAgger/SAC should
+reach 80%+ to demonstrate clear value.
+
 ## License
 
 MIT
