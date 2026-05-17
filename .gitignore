@@ -8,6 +8,8 @@ data/demonstrations/*
 data/checkpoints/*
 !data/demonstrations/.gitkeep
 !data/checkpoints/.gitkeep
+data/checkpoints/bc/**/*.pt
+!data/checkpoints/bc/*.json
 wandb/
 *.onnx
 *.engine
