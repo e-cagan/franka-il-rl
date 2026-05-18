@@ -82,7 +82,7 @@ franka-il-rl/
   - [x] β schedule ablation: linear vs constant vs exponential vs threshold, 3 seeds each
   - [x] Robust evaluation (100 eval episodes × all checkpoints)
 - [x] **Week 9** — SAC implementation from scratch, stability fixes, sparse-reward limitation identified
-- [ ] **Week 10** — BC-warmstart SAC fine-tuning, demonstrations in replay buffer
+- [ ] **Week 10** — HER (Hindsight Experience Replay) for sparse Fetch, BC-warmstart SAC fine-tuning
 
 ### Phase 3 — Deployment & Evaluation
 
