@@ -1,0 +1,37 @@
+# DAgger baseline config
+# Override --initial-dataset and --run-name for different starting points
+
+# Initial dataset (seed for AggregatedDataset)
+# Default: full 800-demo train set (BC baseline scenario)
+initial_dataset_path: "data/demonstrations/demos_train.hdf5"
+
+# DAgger loop
+num_iterations: 10
+rollouts_per_iter: 20         # 20 episodes × 50 step = 1000 new frames/iter
+inner_epochs: 20              # BC epochs per DAgger iteration
+dataset_cap: 800              # FIFO cap, episodes
+
+# Inner BC optimizer (same as Week 5 BC)
+hidden_sizes: [256, 256, 256]
+lr: 3.0e-4
+weight_decay: 1.0e-5
+batch_size: 256
+
+# Eval
+eval_episodes: 20
+
+# Rollouts
+rollout_seed_start: 20000     # disjoint from training (0-999) and eval (10000+)
+
+# Hardware
+device: "cuda"
+num_workers: 0
+
+# Logging
+run_name: "dagger_baseline"
+wandb_project: "franka-il-rl"
+wandb_tags: ["dagger", "fetch"]
+wandb_group: "dagger_baseline"
+
+# Checkpointing
+checkpoint_dir: "data/checkpoints/dagger"
