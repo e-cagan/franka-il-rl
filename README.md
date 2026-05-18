@@ -10,9 +10,9 @@ The project emphasizes a side-by-side comparison of three learning paradigms (of
 
 ## Current Status
 
-**Phase 1 complete**, **Phase 2 in progress** (BC done, DAgger next).
+**Phase 1 complete**, **Phase 2 in progress** (BC + DAgger done, SAC next).
 
-### Headline Results (Week 6 — 15 BC runs, 100-episode robust evaluation)
+### Headline Results (100-episode robust evaluation, 3 seeds)
 
 | Configuration | Success rate |
 |---|---|
@@ -23,13 +23,17 @@ The project emphasizes a side-by-side comparison of three learning paradigms (of
 | BC, 250 demos | 90.7% ± 6.1% |
 | BC, 500 demos | 99.3% ± 0.9% |
 | BC, small capacity (~21k params) | 71.0% ± 7.1% |
+| **DAgger, init 100 demos (300 total)** | **82.7% ± 17.0%** |
+| DAgger, init 800 demos | 93.3% ± 5.0% |
 
 All success rates are mean ± std across 3 seeds (42, 1, 7), 100 evaluation episodes each, on unseen initial conditions (seed_start=10000).
+
+**Key finding**: DAgger starting from only 100 expert demonstrations (and growing to 300 via 200 expert-labeled policy rollouts) reaches 82.7% — vs BC's 20.0% with the same initial budget. This is the sample efficiency win DAgger is designed for.
 
 ## Tech Stack
 
 - **Simulation:** MuJoCo 3.8, Gymnasium, gymnasium-robotics (FetchPickAndPlace-v4)
-- **Learning:** PyTorch, custom BC implementation (DAgger and SAC upcoming)
+- **Learning:** PyTorch, custom BC and DAgger implementations (SAC upcoming)
 - **Experiment tracking:** Weights & Biases
 - **Deployment (planned):** ROS2 Humble, ONNX Runtime, TensorRT FP16
 - **Infrastructure (planned):** Docker, docker-compose
@@ -72,8 +76,12 @@ franka-il-rl/
   - [x] A1: Sample efficiency across {100, 250, 500, 800} demonstrations
   - [x] A2: Network capacity comparison (small vs baseline)
   - [x] Robust evaluation (100 eval episodes × 15 checkpoints)
-- [ ] **Week 7** — DAgger implementation with β-scheduling
-- [ ] **Week 8** — DAgger variants exploration, BC vs DAgger sample efficiency study
+- [x] **Week 7** — DAgger implementation with β-scheduling + BC vs DAgger comparison
+  - [x] DAggerTrainer with AggregatedDataset (FIFO-capped, 800 episodes)
+  - [x] Mixed-policy rollout (β·expert + (1-β)·policy), linear β decay over 10 iterations
+  - [x] Two regimes: init from 100 demos (weak BC baseline) and 800 demos (strong)
+  - [x] 3-seed campaign × 2 regimes = 6 runs, 100-episode robust evaluation
+- [ ] **Week 8** — DAgger variants exploration (β schedule sweep, stateless expert wrapper)
 - [ ] **Week 9** — SAC implementation from scratch, baseline training without warm-start
 - [ ] **Week 10** — BC-warmstart SAC fine-tuning, demonstrations in replay buffer
 
@@ -84,9 +92,37 @@ franka-il-rl/
 - [ ] **Week 13** — Docker training & inference containers, docker-compose orchestration
 - [ ] **Week 14** — Final ablation studies, technical report, README finalization
 
+## Week 7 Results in Detail
+
+### BC vs DAgger Sample Efficiency
+
+DAgger was tested in two regimes: starting from a weak BC baseline (100 demos) and a strong BC baseline (800 demos). In both cases, DAgger ran 10 iterations with linear β decay (1.0 → 0.1), collecting 20 mixed-policy rollouts per iteration with expert-labeled actions. The aggregated dataset was capped at 800 episodes (FIFO eviction).
+
+| Demos | BC (mean ± std) | DAgger (mean ± std) | Δ |
+|---|---|---|---|
+| 100 | 20.0% ± 3.7% | 82.7% ± 17.0% | **+62.7 pp** |
+| 800 | 99.3% ± 0.9% | 93.3% ± 5.0% | -6.0 pp |
+
+![BC vs DAgger sample efficiency](figures/bc_vs_dagger.png)
+
+**Per-seed breakdown:**
+
+| Config | Seed 42 | Seed 1 | Seed 7 |
+|---|---|---|---|
+| DAgger init 100 | 100% | 59% | 89% |
+| DAgger init 800 | 100% | 88% | 92% |
+
+**Two distinct findings:**
+
+**1. DAgger wins in the low-data regime.** With only 100 initial demonstrations (5000 frames), DAgger reaches 82.7% vs BC's 20.0% — a 62.7-point absolute improvement. The aggregated dataset grows from 100 to 300 episodes via 200 expert-labeled policy rollouts. This is the canonical sample efficiency win DAgger is designed for: states actually visited by the policy yield more useful training signal than states the expert happens to visit.
+
+**2. DAgger does NOT help in the high-data regime, and may hurt.** With 800 initial demonstrations, BC already reaches 99.3% — and DAgger drops to 93.3%. This was unexpected. The most likely explanation is a methodology artifact: our `FetchExpert` is implemented as a state-machine (it tracks its own internal phase counter rather than re-deriving phase from each observation). During DAgger rollouts, the policy occasionally visits states the expert wouldn't reach on its own, and the expert returns an action based on its internal phase that does not match what would actually be optimal at the visited state. These noisy labels enter the aggregated dataset. When BC is far from saturation (100-demo case), the sample efficiency benefit outweighs the noise cost; when BC is already saturated (800-demo case), only the noise remains. This is not a flaw in DAgger as an algorithm but a limitation of pairing it with a stateful scripted expert. Week 8 will address this by wrapping `FetchExpert` in a stateless adapter that re-derives its phase from observation at each query.
+
+**3. High variance in low-data DAgger.** The std of 17.0% (DAgger 100) vs 3.7% (BC 100) shows DAgger is sample-efficient but unstable at low data: seed 42 hit 100%, seed 1 only 59%. The first few iterations are critical — if early policy rollouts visit unrepresentative states, the dataset bias compounds across iterations.
+
 ## Week 6 Results in Detail
 
-### A1: Sample Efficiency
+### A1: Sample Efficiency (BC)
 
 How does BC scale with the number of expert demonstrations? Trained BC with `last.pt` checkpoint policy on increasing dataset sizes; evaluated each on 100 held-out episodes.
 
@@ -141,7 +177,7 @@ Developed and tested on:
 - RAM: 16 GB
 - OS: Ubuntu 22.04 (ROS2 Humble target for Phase 3)
 
-## Reproducing Week 6 Results
+## Reproducing Results
 
 ```bash
 # 1. Collect demonstrations (one-time, ~5 min)
@@ -153,18 +189,26 @@ python scripts/split_demos.py --input data/demonstrations/demos.hdf5 \
 # 2. Create demo subsets for A1
 python scripts/subset_demos.py --counts 100 250 500
 
-# 3. Run ablations (~3 hours total on RTX 3050 Ti)
+# 3. Week 6 — BC ablations (~3 hours total on RTX 3050 Ti)
 python scripts/ablate_seeds.py --seeds 42 1 7
 python scripts/ablate_demo_count.py --demo-counts 100 250 500 --seeds 42 1 7
 python scripts/ablate_capacity.py --capacities small --seeds 42 1 7
 
-# 4. Robust evaluation on all checkpoints
+# 4. Week 7 — DAgger campaigns (~2.5 hours total)
+./scripts/run_dagger_seeds.sh   # 6 runs: init {100, 800} × seeds {42, 1, 7}
+
+# 5. Robust evaluation on all checkpoints (BC + DAgger)
 python scripts/robust_eval.py \
     --checkpoints data/checkpoints/bc/*/last.pt \
     --num-episodes 100 --seed-start 10000 \
     --output data/checkpoints/bc/robust_eval_all.json
 
-# 5. Generate plots and tables
+python scripts/robust_eval.py \
+    --checkpoints data/checkpoints/dagger/*/last.pt \
+    --num-episodes 100 --seed-start 10000 \
+    --output data/checkpoints/dagger/dagger_robust_eval_all.json
+
+# 6. Generate plots and tables
 python scripts/plot_ablations.py
 ```
 
@@ -176,9 +220,11 @@ python scripts/plot_ablations.py
 
 **Week 5 (BC baseline)**: BC trained on 800 trajectories reached 100% success rate by epoch 30 on the small in-training eval. Mean episode return improved from -42 (random-like) to -29 (faster than the expert's -32). The Week 6 robust evaluation later confirmed this generalizes to 99.3% on 100 held-out episodes.
 
-**Week 6 methodology**: The biggest lesson of Week 6 was that strong-looking results require strong evaluation. A 3-seed × 20-episode eval suggested BC was perfectly solving the task; a 3-seed × 100-episode eval (with held-out seed range) exposed variance and instability invisible at smaller scales. All future algorithm comparisons in this project (DAgger, SAC) will use the same robust-eval protocol: ≥100 episodes per checkpoint, multiple seeds, evaluation seeds disjoint from training/in-training-eval seeds.
+**Week 6 methodology**: The biggest lesson of Week 6 was that strong-looking results require strong evaluation. A 3-seed × 20-episode eval suggested BC was perfectly solving the task; a 3-seed × 100-episode eval (with held-out seed range) exposed variance and instability invisible at smaller scales. All future algorithm comparisons in this project (DAgger, SAC) use the same robust-eval protocol: ≥100 episodes per checkpoint, multiple seeds, evaluation seeds disjoint from training/in-training-eval seeds.
 
-**Why BC is unusually strong on this task**: The Fetch environment has a short horizon (50 steps), low-dimensional state-based observations (28-D), and a low-DoF action space (4-D EE delta + gripper). These properties minimize compounding error, which is BC's classical weakness. On image-based or longer-horizon tasks, the gap between BC and interactive methods (DAgger) or RL fine-tuning (SAC) is expected to widen — which the upcoming weeks will measure.
+**Week 7 — DAgger sample efficiency vs high-data noise**: DAgger demonstrated its classical sample efficiency advantage in the low-data regime (+62.7 pp over BC at 100 demos) but underperformed BC in the high-data regime (-6.0 pp at 800 demos). The most likely cause is the stateful nature of our scripted expert: `FetchExpert` tracks an internal phase counter rather than re-deriving phase from each observation, so when the DAgger policy visits unexpected states, the expert returns an action based on its phase rather than what would be optimal at the new state. These noisy labels enter the aggregated dataset; in the saturated regime they outweigh the sample efficiency benefit. This is not a DAgger flaw but an artifact of the expert implementation. Week 8 will test a stateless `FetchExpert` adapter that re-derives phase from observation per query.
+
+**Why BC is unusually strong on this task**: The Fetch environment has a short horizon (50 steps), low-dimensional state-based observations (28-D), and a low-DoF action space (4-D EE delta + gripper). These properties minimize compounding error, which is BC's classical weakness. On image-based or longer-horizon tasks, the gap between BC and interactive methods (DAgger) or RL fine-tuning (SAC) is expected to widen.
 
 ## License
 

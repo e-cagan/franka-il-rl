@@ -41,6 +41,25 @@ plt.rcParams.update({
 def load_robust_eval(path):
     with open(path) as f:
         return json.load(f)
+    
+
+def load_dagger_results(path):
+    """Parse DAgger robust eval JSON into {n_demos: [(seed, success), ...]}"""
+    from collections import defaultdict
+    with open(path) as f:
+        results = json.load(f)
+    
+    by_demo_count = defaultdict(list)
+    for r in results:
+        # dagger_init100_seed1 → n_demos=100 (initial), seed=1
+        name = Path(r["checkpoint"]).parent.name
+        # Expected format: dagger_init<N>_seed<S>
+        parts = name.split("_")
+        n_demos = int(parts[1].replace("init", ""))
+        seed = int(parts[2].replace("seed", ""))
+        by_demo_count[n_demos].append((seed, r["success_rate"]))
+    
+    return by_demo_count
 
 
 def parse_results(robust_results):
@@ -217,6 +236,65 @@ def plot_seed_variance(by_demo_count, output_path):
     print(f"Saved: {output_path}.png + .pdf")
 
 
+def plot_bc_vs_dagger(bc_by_demo_count, dagger_by_demo_count, output_path):
+    """BC and DAgger sample efficiency on the same axes."""
+    bc_counts = sorted(bc_by_demo_count.keys())
+    bc_stats = [compute_stats(bc_by_demo_count[c]) for c in bc_counts]
+    bc_means = [s["mean"] * 100 for s in bc_stats]
+    bc_stds = [s["std"] * 100 for s in bc_stats]
+
+    dagger_counts = sorted(dagger_by_demo_count.keys())
+    dagger_stats = [compute_stats(dagger_by_demo_count[c]) for c in dagger_counts]
+    dagger_means = [s["mean"] * 100 for s in dagger_stats]
+    dagger_stds = [s["std"] * 100 for s in dagger_stats]
+
+    fig, ax = plt.subplots(figsize=(7.5, 5))
+
+    # BC curve (Week 6 result)
+    ax.errorbar(bc_counts, bc_means, yerr=bc_stds,
+                marker="o", markersize=8, linewidth=2,
+                color="#2E86AB", ecolor="#A8DADC", capsize=5,
+                label="BC (3 seeds, 100-ep robust eval)")
+
+    # DAgger overlay
+    ax.errorbar(dagger_counts, dagger_means, yerr=dagger_stds,
+                marker="s", markersize=8, linewidth=2,
+                color="#E63946", ecolor="#F4A8B0", capsize=5,
+                label="DAgger (3 seeds, 100-ep robust eval)")
+
+    # Annotate
+    for c, m in zip(bc_counts, bc_means):
+        ax.annotate(f"{m:.0f}%", xy=(c, m), xytext=(8, -14),
+                    textcoords="offset points",
+                    fontsize=9, color="#2E86AB", fontweight="bold")
+    for c, m in zip(dagger_counts, dagger_means):
+        ax.annotate(f"{m:.0f}%", xy=(c, m), xytext=(8, 8),
+                    textcoords="offset points",
+                    fontsize=9, color="#E63946", fontweight="bold")
+
+    # Reference lines
+    ax.axhline(y=15, color="gray", linestyle="--", linewidth=1, alpha=0.6,
+               label="Random baseline (~15%)")
+    ax.axhline(y=100, color="green", linestyle=":", linewidth=1, alpha=0.6,
+               label="Expert ceiling (100%)")
+
+    ax.set_xscale("log")
+    all_counts = sorted(set(bc_counts) | set(dagger_counts))
+    ax.set_xticks(all_counts)
+    ax.set_xticklabels([str(c) for c in all_counts])
+    ax.set_xlabel("Initial demonstration episodes (log scale)")
+    ax.set_ylabel("Success rate (%, 100 eval episodes)")
+    ax.set_title("BC vs DAgger Sample Efficiency — FetchPickAndPlace")
+    ax.set_ylim(-5, 115)
+    ax.legend(loc="lower right", framealpha=0.95)
+
+    plt.tight_layout()
+    plt.savefig(output_path.with_suffix(".png"), dpi=150, bbox_inches="tight")
+    plt.savefig(output_path.with_suffix(".pdf"), bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {output_path}.png + .pdf")
+
+
 def print_summary_table(by_demo_count, by_capacity, baseline_runs):
     """Markdown table for README."""
     print("\n## Summary table (markdown) — copy to README\n")
@@ -257,6 +335,32 @@ def main():
     plot_sample_efficiency(by_demo_count, output_dir / "sample_efficiency")
     plot_capacity(by_capacity, baseline_runs, output_dir / "capacity_comparison")
     plot_seed_variance(by_demo_count, output_dir / "seed_variance")
+
+    # Week 7: BC vs DAgger overlay
+    dagger_results_path = "data/checkpoints/dagger/dagger_robust_eval_all.json"
+    if Path(dagger_results_path).exists():
+        dagger_by_demo_count = load_dagger_results(dagger_results_path)
+
+        # Only show demo counts that exist in both BC and DAgger
+        bc_subset = {c: by_demo_count[c]
+                     for c in dagger_by_demo_count.keys()
+                     if c in by_demo_count}
+        plot_bc_vs_dagger(bc_subset, dagger_by_demo_count,
+                          output_dir / "bc_vs_dagger")
+
+        # Also print DAgger table
+        print("\n### BC vs DAgger comparison (robust eval, mean ± std)\n")
+        print("| Demos | BC | DAgger | Δ |")
+        print("|---|---|---|---|")
+        for c in sorted(dagger_by_demo_count.keys()):
+            if c not in bc_subset:
+                continue
+            bc_s = compute_stats(bc_subset[c])
+            d_s = compute_stats(dagger_by_demo_count[c])
+            delta = (d_s["mean"] - bc_s["mean"]) * 100
+            sign = "+" if delta >= 0 else ""
+            print(f"| {c} | {bc_s['mean']:.1%} ± {bc_s['std']:.1%} | "
+                  f"{d_s['mean']:.1%} ± {d_s['std']:.1%} | {sign}{delta:.1f} pp |")
 
     print_summary_table(by_demo_count, by_capacity, baseline_runs)
 
