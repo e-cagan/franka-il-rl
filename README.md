@@ -81,7 +81,7 @@ franka-il-rl/
   - [x] Stateless `FetchExpert` adapter attempted (negative result; see Week 8 details)
   - [x] β schedule ablation: linear vs constant vs exponential vs threshold, 3 seeds each
   - [x] Robust evaluation (100 eval episodes × all checkpoints)
-- [ ] **Week 9** — SAC implementation from scratch, baseline training without warm-start
+- [x] **Week 9** — SAC implementation from scratch, stability fixes, sparse-reward limitation identified
 - [ ] **Week 10** — BC-warmstart SAC fine-tuning, demonstrations in replay buffer
 
 ### Phase 3 — Deployment & Evaluation
@@ -90,6 +90,22 @@ franka-il-rl/
 - [ ] **Week 12** — ONNX export, TensorRT FP16 engine, latency benchmarking
 - [ ] **Week 13** — Docker training & inference containers, docker-compose orchestration
 - [ ] **Week 14** — Final ablation studies, technical report, README finalization
+
+## Week 9 Results in Detail
+
+### SAC Baseline — Stable but Task-Bound Without HER
+
+Implemented SAC from scratch (twin Q-networks, tanh-squashed Gaussian policy with reparameterization, auto-tuned entropy temperature, soft target updates) and trained on FetchPickAndPlace. Two iterations:
+
+**Iteration 1 — Sparse reward, target_entropy = -|A| = -4 (Haarnoja default).** Trained 30k steps. Diverged: alpha exploded (0.2 → 1280), Q-values exploded in tandem (Q1 mean reaching +48k mid-training, trajectory toward +320k equilibrium), entropy stuck at ~2.7, eval success at random baseline (10%).
+
+Root cause: target_entropy = -4 is unreachable for a 4-D tanh-squashed Gaussian. The achievable differential entropy ceiling is 4·log(2) ≈ 2.77 (uniform distribution over [-1,1]^4). The auto-tuning loop indefinitely pushes alpha up trying to reach an impossible target, and once alpha grows, the bootstrap entropy bonus α·|log π| dominates the Bellman target, driving Q-values positive in a self-reinforcing feedback loop.
+
+**Iteration 2 — Sparse reward, target_entropy = -2.** Alpha now converges to a stable equilibrium (~0.07), Q-loss bounded, no divergence. But eval success still stuck at 10%: the sparse -1-per-step reward provides insufficient learning signal for SAC's random exploration to discover successful grasps.
+
+**Iteration 3 — Dense reward (negative cube-to-goal distance), target_entropy = -2.** Algorithm fully stable across 60k steps (alpha ~0.07, Q-loss < 1.0). But the policy converges to a trivial do-nothing behavior (eval return -9.7, corresponding to "arm stationary, cube unmoved for 50 steps"). This is a known property of dense FetchPickAndPlace: until the cube is grasped, the achieved_goal (cube position) does not move, so dense reward is flat through the grasping phase, providing no exploration signal.
+
+**Conclusion**: SAC implementation is mathematically correct and numerically stable. The remaining barrier is exploration in a goal-conditioned sparse-reward setting — the canonical use case for **Hindsight Experience Replay** (Andrychowicz et al. 2017), which retroactively relabels failed trajectories with goals that *were* achieved, converting every episode into informative training signal. Week 10 implements HER on top of the existing SAC; the algorithm itself does not change.
 
 ## Week 8 Results in Detail
 

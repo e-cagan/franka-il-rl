@@ -4,7 +4,7 @@
 gamma: 0.99
 tau: 0.005
 init_alpha: 0.2
-target_entropy: -2.0  # = -action_dim/2; -|A| unreachable for 4-D tanh-squashed Gaussian (max H ≈ 2.77)
+target_entropy: -2.0  # = -action_dim for FetchPickAndPlace
 
 # Networks
 obs_dim: 28
@@ -32,10 +32,13 @@ buffer_capacity: 200000
 device: "cuda"
 
 # Logging
-run_name: "sac_baseline"
 wandb_project: "franka-il-rl"
 wandb_tags: ["sac", "fetch", "baseline"]
 wandb_group: "sac_baseline"
 
 # Checkpointing
 checkpoint_dir: "data/checkpoints/sac"
+
+reward_type: "dense"
+run_name: "sac_dense_smoke_seed42"
+total_env_steps: 60000
