@@ -295,6 +295,88 @@ def plot_bc_vs_dagger(bc_by_demo_count, dagger_by_demo_count, output_path):
     print(f"Saved: {output_path}.png + .pdf")
 
 
+def load_beta_results(linear_path, beta_path):
+    """
+    Combine linear schedule (from Week 7 dagger_robust_eval_all.json,
+    init100 entries) with other schedules from Week 8 beta_robust_eval.json.
+    Returns dict: {schedule_name: [(seed, success), ...]}
+    """
+    from collections import defaultdict
+    by_schedule = defaultdict(list)
+
+    # Linear: pull from Week 7 dagger results, only init100 entries
+    with open(linear_path) as f:
+        week7 = json.load(f)
+    for r in week7:
+        name = Path(r["checkpoint"]).parent.name
+        if "init100" not in name:
+            continue
+        seed = int(name.split("seed")[1])
+        by_schedule["linear"].append((seed, r["success_rate"]))
+
+    # Other schedules from Week 8
+    with open(beta_path) as f:
+        week8 = json.load(f)
+    for r in week8:
+        name = Path(r["checkpoint"]).parent.name
+        # dagger_beta_<schedule>_seed<S>
+        parts = name.split("_")
+        schedule = parts[2]
+        seed = int(parts[3].replace("seed", ""))
+        by_schedule[schedule].append((seed, r["success_rate"]))
+
+    return by_schedule
+
+
+def plot_beta_schedule_comparison(by_schedule, output_path):
+    """Bar chart: success rate by β schedule, mean ± std."""
+    # Order: linear, constant, exponential, threshold
+    order = ["linear", "constant", "exponential", "threshold"]
+    schedules = [s for s in order if s in by_schedule]
+
+    means = []
+    stds = []
+    labels = []
+    for s in schedules:
+        stats = compute_stats(by_schedule[s])
+        means.append(stats["mean"] * 100)
+        stds.append(stats["std"] * 100)
+        n = stats["n"]
+        labels.append(f"{s}\n(n={n} seed{'s' if n > 1 else ''})")
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    colors = ["#2E86AB", "#F4A261", "#E76F51", "#6A4C93"]
+    x = np.arange(len(schedules))
+    ax.bar(x, means, yerr=stds, color=colors[:len(schedules)],
+           capsize=8, edgecolor="black", linewidth=1, width=0.6)
+
+    for xi, m, s in zip(x, means, stds):
+        if s > 0:
+            label = f"{m:.0f}% ± {s:.0f}%"
+        else:
+            label = f"{m:.0f}%"
+        ax.annotate(label, xy=(xi, m), xytext=(0, 6),
+                    textcoords="offset points",
+                    ha="center", fontsize=10, fontweight="bold")
+
+    ax.axhline(y=15, color="gray", linestyle="--", linewidth=1, alpha=0.6,
+               label="Random baseline (~15%)")
+    ax.axhline(y=100, color="green", linestyle=":", linewidth=1, alpha=0.6,
+               label="Expert ceiling")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_ylabel("Success rate (%, 100 eval episodes)")
+    ax.set_title("DAgger β-Schedule Ablation (init 100 demos)")
+    ax.set_ylim(0, 115)
+    ax.legend(loc="upper right", framealpha=0.95)
+
+    plt.tight_layout()
+    plt.savefig(output_path.with_suffix(".png"), dpi=150, bbox_inches="tight")
+    plt.savefig(output_path.with_suffix(".pdf"), bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {output_path}.png + .pdf")
+
+
 def print_summary_table(by_demo_count, by_capacity, baseline_runs):
     """Markdown table for README."""
     print("\n## Summary table (markdown) — copy to README\n")
@@ -347,6 +429,22 @@ def main():
                      if c in by_demo_count}
         plot_bc_vs_dagger(bc_subset, dagger_by_demo_count,
                           output_dir / "bc_vs_dagger")
+        
+        # Week 8: β schedule comparison
+        linear_path = "data/checkpoints/dagger/dagger_robust_eval_all.json"
+        beta_path = "data/checkpoints/dagger/beta_robust_eval.json"
+        if Path(linear_path).exists() and Path(beta_path).exists():
+            by_schedule = load_beta_results(linear_path, beta_path)
+            plot_beta_schedule_comparison(by_schedule, output_dir / "beta_schedule")
+
+            print("\n### β-schedule comparison (robust eval, DAgger init100)\n")
+            print("| Schedule | Mean | Std | n |")
+            print("|---|---|---|---|")
+            for s in ["linear", "constant", "exponential", "threshold"]:
+                if s not in by_schedule:
+                    continue
+                stats = compute_stats(by_schedule[s])
+                print(f"| {s} | {stats['mean']:.1%} | {stats['std']:.1%} | {stats['n']} |")
 
         # Also print DAgger table
         print("\n### BC vs DAgger comparison (robust eval, mean ± std)\n")

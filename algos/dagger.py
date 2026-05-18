@@ -222,8 +222,30 @@ class DAggerTrainer:
         self.best_success_rate = -1.0
 
     def compute_beta(self, iteration):
-        """Linear decay: β = max(0, 1 - i/N)."""
-        return max(0.0, 1.0 - iteration / self.num_iterations)
+        """
+        Compute β for the given iteration based on the configured schedule.
+
+        Supported schedules (config["beta_schedule"]):
+            "linear":      β = max(0, 1 - i/N)        (default)
+            "exponential": β = decay_rate^i           (uses config["beta_decay"], default 0.7)
+            "threshold":   β = 1 if i < k else 0      (uses config["beta_threshold_k"], default 3)
+            "constant":    β = config["beta_constant"] (default 0.3)
+        """
+        schedule = self.config.get("beta_schedule", "linear")
+        N = self.num_iterations
+
+        if schedule == "linear":
+            return max(0.0, 1.0 - iteration / N)
+        elif schedule == "exponential":
+            decay = self.config.get("beta_decay", 0.7)
+            return decay ** iteration
+        elif schedule == "threshold":
+            k = self.config.get("beta_threshold_k", 3)
+            return 1.0 if iteration < k else 0.0
+        elif schedule == "constant":
+            return self.config.get("beta_constant", 0.3)
+        else:
+            raise ValueError(f"Unknown beta_schedule: {schedule}")
 
     def train_inner_bc(self):
         """Retrain policy on aggregated dataset for inner_epochs epochs."""
