@@ -4,13 +4,13 @@ End-to-end imitation learning to RL pipeline for robotic pick-and-place: Behavio
 
 ## Overview
 
-This project explores a complete imitation-to-reinforcement learning pipeline on a simulated robot arm. A scripted expert generates demonstrations in MuJoCo, which are first cloned via Behavioral Cloning, then refined interactively via DAgger, and finally fine-tuned with Soft Actor-Critic to surpass the expert. The final policy is exported to ONNX/TensorRT and deployed through a ROS2 Humble inference node, with the entire stack containerized via Docker.
+This project explores a complete imitation-to-reinforcement learning pipeline on a simulated robot arm. A scripted expert generates demonstrations in MuJoCo, which are first cloned via Behavioral Cloning, then refined interactively via DAgger, and finally trained from scratch with Soft Actor-Critic to evaluate online RL on the same task. The final BC-trained policy is exported to ONNX/TensorRT and deployed through a ROS2 Humble inference node, with the entire stack containerized via Docker.
 
 The project emphasizes a side-by-side comparison of three learning paradigms (offline imitation, interactive imitation, online RL) under a single environment and evaluation harness, with controlled ablation studies on demonstration count, network capacity, expert design, and β scheduling. All experiments are reproducible via seed-controlled scripts and tracked in Weights & Biases.
 
 ## Current Status
 
-**Phase 1 complete**, **Phase 2 nearing completion** (BC + DAgger done with ablations, SAC next).
+**Phase 2 complete**. Deployment pipeline (Phase 3) in progress.
 
 ### Headline Results (100-episode robust evaluation, 3 seeds)
 
@@ -27,20 +27,24 @@ The project emphasizes a side-by-side comparison of three learning paradigms (of
 | DAgger linear β, init 800 demos | 93.3% ± 5.0% |
 | DAgger constant β=0.3, init 100 | 49.0% ± 11.4% |
 | DAgger exponential β decay 0.7, init 100 | 17.3% ± 9.1% |
+| SAC from scratch, sparse reward | ~10% (random baseline) |
+| SAC + HER, sparse reward | ~20% peak |
+| SAC + HER + demo prefill (DAPG-style) | ~10% (no learning) |
 
-All success rates are mean ± std across 3 seeds (42, 1, 7), 100 evaluation episodes each, on unseen initial conditions (seed_start=10000).
+BC and DAgger success rates are mean ± std across 3 seeds (42, 1, 7), 100 evaluation episodes each, on unseen initial conditions (seed_start=10000). SAC results are best-of-run from single-seed exploration; see Week 9 and Week 10 for the analysis of why online RL does not converge on this task without algorithmic changes beyond the SAC + HER + demos scope.
 
 **Key findings:**
 - DAgger starting from only 100 expert demonstrations (and growing to 300 via 200 expert-labeled policy rollouts) reaches 82.7% — vs BC's 20.0% with the same initial budget.
 - Among four β schedules tested, linear decay clearly dominates; constant/exponential/threshold are all substantially worse.
+- SAC trained from scratch on sparse FetchPickAndPlace does not converge, even with HER and demo pre-fill. The bottleneck is offline-to-online distribution shift between the demonstration-warmed critic and the random-initialized actor — a known limitation requiring specialized offline-to-online algorithms (AWAC, IQL, CalQL) that fall outside this project's scope.
 
 ## Tech Stack
 
 - **Simulation:** MuJoCo 3.8, Gymnasium, gymnasium-robotics (FetchPickAndPlace-v4)
-- **Learning:** PyTorch, custom BC and DAgger implementations (SAC upcoming)
+- **Learning:** PyTorch, custom BC, DAgger, and SAC implementations
 - **Experiment tracking:** Weights & Biases
-- **Deployment (planned):** ROS2 Humble, ONNX Runtime, TensorRT FP16
-- **Infrastructure (planned):** Docker, docker-compose
+- **Deployment (Phase 3):** ROS2 Humble, ONNX Runtime, TensorRT FP16
+- **Infrastructure (Phase 3):** Docker, docker-compose
 
 ## Project Structure
 
@@ -51,7 +55,7 @@ franka-il-rl/
 ├── experts/          # Scripted expert policy for demonstrations
 ├── algos/            # BC, DAgger, SAC implementations
 ├── networks/         # MLP and Gaussian policy networks
-├── data_utils/       # Replay buffer and demonstration dataset
+├── data_utils/       # Replay buffer (vanilla + HER) and demonstration dataset
 ├── utils/            # Logging and seeding helpers
 ├── scripts/          # Entry points (training, evaluation, export)
 ├── data/             # Demonstrations and checkpoints (gitignored)
@@ -66,10 +70,6 @@ franka-il-rl/
 - [x] **Week 1** — Environment setup, MuJoCo sanity check, RL theory grounding
 - [x] **Week 2** — Custom Franka env attempt (archived; see Project Notes)
 - [x] **Week 3** — Fetch wrapper, scripted expert, demonstration collection
-  - [x] gymnasium-robotics setup, `FetchPickPlaceWrapper`
-  - [x] Scripted expert (1000/1000 success rate)
-  - [x] Demonstration collection pipeline (1000 episodes, HDF5)
-  - [x] Train/val/test split (80/10/10, episode-level)
 - [x] **Week 4** — Data pipeline, evaluation harness, baseline metrics, W&B integration
 
 ### Phase 2 — Algorithms
@@ -78,11 +78,8 @@ franka-il-rl/
 - [x] **Week 6** — BC ablation studies (seed sensitivity, sample efficiency, capacity)
 - [x] **Week 7** — DAgger implementation with β-scheduling + BC vs DAgger comparison
 - [x] **Week 8** — DAgger variants exploration (β schedule sweep, stateless expert experiment)
-  - [x] Stateless `FetchExpert` adapter attempted (negative result; see Week 8 details)
-  - [x] β schedule ablation: linear vs constant vs exponential vs threshold, 3 seeds each
-  - [x] Robust evaluation (100 eval episodes × all checkpoints)
 - [x] **Week 9** — SAC implementation from scratch, stability fixes, sparse-reward limitation identified
-- [ ] **Week 10** — HER (Hindsight Experience Replay) for sparse Fetch, BC-warmstart SAC fine-tuning
+- [x] **Week 10** — HER + demo prefill (DAPG-style); convergence blocked by distribution shift, documented as open problem
 
 ### Phase 3 — Deployment & Evaluation
 
@@ -91,11 +88,31 @@ franka-il-rl/
 - [ ] **Week 13** — Docker training & inference containers, docker-compose orchestration
 - [ ] **Week 14** — Final ablation studies, technical report, README finalization
 
+## Week 10 Results in Detail
+
+### HER + Demo Prefill — Offline-to-Online Distribution Shift Blocks Convergence
+
+Week 9 identified that plain SAC cannot solve sparse FetchPickAndPlace because random exploration fails to grasp the cube. Week 10 implemented Hindsight Experience Replay (Andrychowicz et al., 2017) and demo pre-fill (DAPG-style, Rajeswaran et al., 2018) on top of the SAC trainer to address this. Two iterations:
+
+**Iteration 1 — Plain HER (`future` strategy, k=4).** Implemented an episode-aware `HERReplayBuffer` that stages transitions during an episode and, on flush, writes T originals plus (T-1)·k relabeled copies whose `desired_goal` is replaced by an `achieved_goal` reached later in the same episode. The wrapper was extended to expose `info["achieved_goal"]` on every reset/step and to proxy the underlying env's `compute_reward` so the buffer can recompute rewards under synthetic goals. Trained 200k env steps. Algorithm fully stable (alpha ~0.07, Q-loss < 5), but eval success peaked at 20%, indistinguishable from the random baseline.
+
+Root cause: HER requires the `achieved_goal` to vary meaningfully across an episode for its relabels to be informative. Random policy never grasps the cube, so the cube stays at its spawn position throughout the episode. Relabeled `desired_goal` then equals the cube's initial position, the distance is below threshold, and every relabeled transition is a trivial reward=0 success. The buffer fills with "stay near the cube" exemplars that teach nothing about pick-and-place.
+
+**Iteration 2 — HER + demo prefill (DAPG-style).** Added a `_prefill_from_demos` method that loads the 800-trajectory expert HDF5, stages each demo episode into the HER buffer, and flushes — producing 800 × 246 ≈ 197k seed transitions (originals + HER relabels) before the SAC training loop begins. The intent: give HER the diverse `achieved_goal` trajectories it needs, by sourcing them from successful expert episodes rather than random rollouts. Trained 90k+ env steps. Result identical: 10% eval success, no learning.
+
+Root cause: the demonstration tuples teach the **critic** (Q-network) where good (state, expert_action) pairs sit in value space, but the **actor** is initialized randomly and samples on-policy actions far from the demo distribution. The critic's Q estimates outside the demo support are untrustworthy, so the actor receives noisy gradients. Auto-alpha climbs to ~0.27 chasing the entropy target, the policy collapses to "do nothing" (return -45 = 50 × -1), and the system reaches a stable but uninformative equilibrium.
+
+This is the classical **offline-to-online distribution shift** problem in deep RL. Standard SAC is not designed for this regime; algorithms purpose-built for it (AWAC, IQL, CalQL) constrain the actor to stay near the data distribution while learning. Implementing one of those is a separate project; this work documents the limitation as encountered.
+
+**What works in this codebase:** the SAC implementation itself is mathematically correct and numerically stable across all configurations tested. The HER buffer correctly produces T + (T-1)·k entries per episode, sample composition is ≈1/(1+k) originals and k/(1+k) relabels by uniform sampling, and the demo prefill loads cleanly. The remaining gap is algorithmic, not implementational.
+
+**Conclusion**: SAC + HER + demos is a strong implementation exercise — twin Q, reparameterized tanh-Gaussian policy, auto-tuned entropy temperature, hindsight relabeling, DAPG-style buffer seeding — but does not solve sparse FetchPickAndPlace from scratch. BC (99.3%) and DAgger (82.7%) remain the deployed policies; SAC is preserved as a reference implementation and a documented negative result.
+
 ## Week 9 Results in Detail
 
-### SAC Baseline — Stable but Task-Bound Without HER
+### SAC Baseline — Stable but Task-Bound Without Algorithmic Augmentation
 
-Implemented SAC from scratch (twin Q-networks, tanh-squashed Gaussian policy with reparameterization, auto-tuned entropy temperature, soft target updates) and trained on FetchPickAndPlace. Two iterations:
+Implemented SAC from scratch (twin Q-networks, tanh-squashed Gaussian policy with reparameterization, auto-tuned entropy temperature, soft target updates) and trained on FetchPickAndPlace. Three iterations:
 
 **Iteration 1 — Sparse reward, target_entropy = -|A| = -4 (Haarnoja default).** Trained 30k steps. Diverged: alpha exploded (0.2 → 1280), Q-values exploded in tandem (Q1 mean reaching +48k mid-training, trajectory toward +320k equilibrium), entropy stuck at ~2.7, eval success at random baseline (10%).
 
@@ -103,9 +120,9 @@ Root cause: target_entropy = -4 is unreachable for a 4-D tanh-squashed Gaussian.
 
 **Iteration 2 — Sparse reward, target_entropy = -2.** Alpha now converges to a stable equilibrium (~0.07), Q-loss bounded, no divergence. But eval success still stuck at 10%: the sparse -1-per-step reward provides insufficient learning signal for SAC's random exploration to discover successful grasps.
 
-**Iteration 3 — Dense reward (negative cube-to-goal distance), target_entropy = -2.** Algorithm fully stable across 60k steps (alpha ~0.07, Q-loss < 1.0). But the policy converges to a trivial do-nothing behavior (eval return -9.7, corresponding to "arm stationary, cube unmoved for 50 steps"). This is a known property of dense FetchPickAndPlace: until the cube is grasped, the achieved_goal (cube position) does not move, so dense reward is flat through the grasping phase, providing no exploration signal.
+**Iteration 3 — Dense reward (negative cube-to-goal distance), target_entropy = -2.** Algorithm fully stable across 60k steps (alpha ~0.07, Q-loss < 1.0). But the policy converges to a trivial do-nothing behavior (eval return -9.7, corresponding to "arm stationary, cube unmoved for 50 steps"). This is a known property of dense FetchPickAndPlace: until the cube is grasped, the `achieved_goal` (cube position) does not move, so dense reward is flat through the grasping phase, providing no exploration signal.
 
-**Conclusion**: SAC implementation is mathematically correct and numerically stable. The remaining barrier is exploration in a goal-conditioned sparse-reward setting — the canonical use case for **Hindsight Experience Replay** (Andrychowicz et al. 2017), which retroactively relabels failed trajectories with goals that *were* achieved, converting every episode into informative training signal. Week 10 implements HER on top of the existing SAC; the algorithm itself does not change.
+**Conclusion**: SAC implementation is mathematically correct and numerically stable. The remaining barrier is exploration in a goal-conditioned sparse-reward setting — addressed in Week 10 via HER and demo pre-fill (with mixed results; see above).
 
 ## Week 8 Results in Detail
 
@@ -137,56 +154,6 @@ DAgger's mixing coefficient β controls how much the expert vs the learner polic
 | Schedule | Formula | Behavior |
 |---|---|---|
 | **linear** (Week 7 default) | β = max(0, 1 - i/N) | Smooth full decay over 10 iters |
-| constant | β = 0.3 | Sustained light expert mixing |
-| exponential | β = 0.7^i | Fast smooth decay (β≈0.24 by iter 5) |
-| threshold | β = 1 if i < 3 else 0 | Burn-in then pure policy |
-
-3 seeds (42, 1, 7) per schedule, robust evaluation (100 episodes, seed_start=10000):
-
-| Schedule | Mean success | Std | n |
-|---|---|---|---|
-| **linear** | **82.7%** | **17.0%** | 3 |
-| constant β=0.3 | 49.0% | 11.4% | 3 |
-| exponential decay=0.7 | 17.3% | 9.1% | 3 |
-| threshold k=3 | 10.0% | — | 1 |
-
-![β schedule comparison](figures/beta_schedule.png)
-
-**Findings:**
-
-- **Linear decay is the clear winner.** All alternatives are substantially worse. The threshold schedule was tested with a single seed first as a smoke test; given its low success (10%) further seeds were not pursued, as the result aligned with the schedule sweep's broader trend.
-- **Two factors matter: total expert mixing AND smooth decay.** Linear provides both. Constant β=0.3 is smooth but provides too little expert assistance for the policy to bootstrap. Exponential decays too aggressively (β drops below 0.1 by iter 6). Threshold cuts expert assistance abruptly at iter 3, leaving the policy stranded before it has learned enough.
-- **In-training eval was particularly misleading for these schedules.** Constant β=0.3 showed 70% in-training but only 49% robust eval (21 pp drop). Exponential showed 45% → 17% (28 pp drop). Linear remained tight: ~83% in-training → 82.7% robust. **Smooth-decay schedules don't just produce better policies; they produce policies whose in-training metric is more honest.**
-
-The constant β=0.3 rollout success climbed steadily (10% → 85% by iter 10), suggesting it might match linear with a longer training budget. This is a possible future ablation but was not pursued for Week 8 scope.
-
-## Week 7 Results in Detail
-
-### BC vs DAgger Sample Efficiency
-
-DAgger was tested in two regimes: starting from a weak BC baseline (100 demos) and a strong BC baseline (800 demos). In both cases, DAgger ran 10 iterations with linear β decay (1.0 → 0.1), collecting 20 mixed-policy rollouts per iteration with expert-labeled actions. The aggregated dataset was capped at 800 episodes (FIFO eviction).
-
-| Demos | BC (mean ± std) | DAgger (mean ± std) | Δ |
-|---|---|---|---|
-| 100 | 20.0% ± 3.7% | 82.7% ± 17.0% | **+62.7 pp** |
-| 800 | 99.3% ± 0.9% | 93.3% ± 5.0% | -6.0 pp |
-
-![BC vs DAgger sample efficiency](figures/bc_vs_dagger.png)
-
-**Per-seed breakdown:**
-
-| Config | Seed 42 | Seed 1 | Seed 7 |
-|---|---|---|---|
-| DAgger init 100 | 100% | 59% | 89% |
-| DAgger init 800 | 100% | 88% | 92% |
-
-**Two distinct findings:**
-
-**1. DAgger wins in the low-data regime.** With only 100 initial demonstrations (5000 frames), DAgger reaches 82.7% vs BC's 20.0% — a 62.7-point absolute improvement. The aggregated dataset grows from 100 to 300 episodes via 200 expert-labeled policy rollouts. This is the canonical sample efficiency win DAgger is designed for: states actually visited by the policy yield more useful training signal than states the expert happens to visit.
-
-**2. DAgger does NOT help in the high-data regime, and may hurt.** With 800 initial demonstrations, BC already reaches 99.3% — and DAgger drops to 93.3%. This was unexpected. See Week 8 stateless expert experiment for the methodology investigation. The likely cause is the stateful nature of `FetchExpert`: during DAgger rollouts, the policy occasionally visits states the expert wouldn't reach on its own, and the expert returns an action based on its internal phase that does not match what would actually be optimal at the visited state. These noisy labels enter the aggregated dataset. When BC is far from saturation (100-demo case), the sample efficiency benefit outweighs the noise cost; when BC is already saturated (800-demo case), only the noise remains. This is not a flaw in DAgger as an algorithm but a limitation of pairing it with a stateful scripted expert. A stateless adapter was attempted (Week 8) without success.
-
-**3. High variance in low-data DAgger.** The std of 17.0% (DAgger 100) vs 3.7% (BC 100) shows DAgger is sample-efficient but unstable at low data: seed 42 hit 100%, seed 1 only 59%. The first few iterations are critical — if early policy rollouts visit unrepresentative states, the dataset bias compounds across iterations.
 
 ## Week 6 Results in Detail
 
@@ -280,7 +247,13 @@ python scripts/robust_eval.py \
     --num-episodes 100 --seed-start 10000 \
     --output data/checkpoints/dagger/dagger_robust_eval_all.json
 
-# 7. Generate plots and tables
+# 7. Week 9 — SAC baseline (sparse, stable but does not converge)
+python scripts/train_sac.py --config configs/sac.yaml
+
+# 8. Week 10 — SAC + HER + demos (negative result, documented)
+python scripts/train_sac.py --config configs/sac_her.yaml
+
+# 9. Generate plots and tables
 python scripts/plot_ablations.py
 ```
 
@@ -297,6 +270,10 @@ python scripts/plot_ablations.py
 **Week 7 — DAgger sample efficiency vs high-data noise**: DAgger demonstrated its classical sample efficiency advantage in the low-data regime (+62.7 pp over BC at 100 demos) but underperformed BC in the high-data regime (-6.0 pp at 800 demos). The likely cause is the stateful nature of the scripted expert; see Week 8 for the (unsuccessful) attempt to fix this.
 
 **Week 8 — stateless expert and β scheduling**: Two ablations. (1) A stateless `FetchExpert` adapter was attempted to fix the Week 7 DAgger 800 paradox; three iterations all failed because scripted state-machine experts encode implicit temporal dependencies not recoverable from single observations. The negative result is documented in `experts/fetch_expert_stateless.py`. (2) A β-schedule sweep showed that DAgger's standard linear decay strongly outperforms alternatives (constant, exponential, threshold); the combination of "smooth decay" and "sufficient cumulative expert mixing" matters, and aggressive or abrupt schedules fail.
+
+**Week 9 — SAC stability and the target_entropy bug**: The most subtle finding of Week 9 was that Haarnoja's standard target_entropy = -|A| heuristic is unreachable for tanh-squashed Gaussians, whose achievable entropy is bounded by |A|·log(2). For 4-D actions this ceiling is ≈2.77, below the -|A| target of 4. Auto-tuning therefore pushes alpha to runaway growth, which inflates the bootstrap entropy bonus in the Bellman target, driving Q-values to explode with a self-reinforcing feedback loop. Lowering target_entropy to -|A|/2 = -2 produced a fully stable SAC; alpha converged to ~0.07 and Q-loss stayed bounded. The implementation itself was verified clean (shape checks, sign verification, detached alpha, sparse-vs-dense isolation), confirming the issue was hyperparameter choice, not code. This is worth flagging because the -|A| heuristic is widespread despite being problematic for tanh policies.
+
+**Week 10 — SAC + HER + demos as a documented negative result**: HER (Andrychowicz 2017) and DAPG-style demo pre-fill (Rajeswaran 2018) were implemented to address the sparse-reward exploration bottleneck. Both are mechanically correct and numerically stable. Plain HER fails because random rollouts produce trivial relabels (cube never moves, synthetic goals collapse to the spawn position). HER + demos fails because of offline-to-online distribution shift: the critic learns from demo (s, a, r, s') tuples but the random-initialized actor samples actions far from the demo support, where critic estimates are unreliable, and the system stabilizes in a do-nothing equilibrium (return -45, alpha ~0.27). This is the canonical regime for purpose-built offline-to-online algorithms (AWAC, IQL, CalQL), which lie outside this project's scope. The SAC, HER, and demo-prefill implementations remain in the codebase as reference and as the basis for any future offline-RL extension.
 
 **Why BC is unusually strong on this task**: The Fetch environment has a short horizon (50 steps), low-dimensional state-based observations (28-D), and a low-DoF action space (4-D EE delta + gripper). These properties minimize compounding error, which is BC's classical weakness. On image-based or longer-horizon tasks, the gap between BC and interactive methods (DAgger) or RL fine-tuning (SAC) is expected to widen.
 

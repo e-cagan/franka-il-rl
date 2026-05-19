@@ -1,0 +1,68 @@
+# SAC + HER + demos config for sparse FetchPickAndPlace
+#
+# Plain HER underperforms here (200k steps, ~20% peak) because random
+# warmup never grasps the cube -> achieved_goals are constant per episode
+# -> HER relabels are trivial (synthetic goal == cube initial position).
+# Pre-filling the buffer with 800 expert demos (each producing T + (T-1)*k
+# = 246 entries) gives HER the diverse achieved_goal trajectories it needs.
+
+# Algorithm
+gamma: 0.99
+tau: 0.005
+init_alpha: 0.2
+# -|A|/2 = -2. Note: -|A| (Haarnoja default) is unreachable for a 4-D
+# tanh-squashed Gaussian since H_max = 4*log(2) ≈ 2.77.
+target_entropy: -2.0
+
+# HER (Hindsight Experience Replay)
+use_her: true
+her_k: 4
+her_strategy: "future"
+goal_dim: 3
+
+# Demo pre-fill (DAPG-style: expert trajectories seeded into buffer)
+# Adjust path if your demo file lives elsewhere; train/val/test split
+# is fine, the prefill uses whichever file you point to.
+demo_path: "data/demonstrations/demos_train.hdf5"
+
+# Environment
+reward_type: "sparse"
+
+# Networks
+obs_dim: 28
+action_dim: 4
+policy_hidden: [256, 256]
+q_hidden: [256, 256]
+
+# Optimization
+lr_actor: 3.0e-4
+lr_critic: 3.0e-4
+lr_alpha: 3.0e-4
+batch_size: 256
+
+# Training
+# With demos pre-filled, learning should kick in within 30-80k env steps.
+# 300k gives headroom for the actor to fully exploit the seeded Q function.
+total_env_steps: 300000
+warmup_steps: 1000
+updates_per_step: 1
+eval_every_steps: 5000
+eval_episodes: 20
+
+# Buffer
+# 800 demos prefill ~197k entries; 300k env steps add ~1.5M more.
+# Cap at 2M to keep older demo episodes resident (FIFO eviction would
+# eventually purge them at lower capacities).
+buffer_capacity: 2000000
+
+# Hardware
+device: "cuda"
+
+# Logging
+run_name: "sac_her_demos_baseline"
+wandb_project: "franka-il-rl"
+wandb_tags: ["sac", "her", "demos", "fetch", "sparse", "dapg"]
+wandb_group: "sac_her_demos"
+
+# Checkpointing
+checkpoint_dir: "data/checkpoints/sac_her_demos"

@@ -6,13 +6,19 @@ Off-policy actor-critic algorithm with:
   - Soft-updated target Q-networks
   - Stochastic Gaussian policy with tanh squashing
   - Automatic entropy temperature (alpha) tuning
+  - Optional HER (Hindsight Experience Replay) for sparse goal-conditioned tasks
+  - Optional demo pre-fill (DAPG-style: expert trajectories seeded into the
+    replay buffer to bootstrap exploration in hard sparse-reward tasks)
 
 Online training loop: each environment step adds a transition to the
 replay buffer and triggers one (or more) gradient updates on critic,
 actor, and alpha.
 
-Reference:
+References:
     Haarnoja et al. (2018), "Soft Actor-Critic Algorithms and Applications"
+    Andrychowicz et al. (2017), "Hindsight Experience Replay"
+    Rajeswaran et al. (2018), "Learning Complex Dexterous Manipulation
+        with Deep RL and Demonstrations" (DAPG)
 """
 
 import copy
@@ -24,6 +30,8 @@ import torch.nn.functional as F
 from networks.gaussian_policy import GaussianPolicy
 from networks.q_network import QNetwork
 from data_utils.replay_buffer import ReplayBuffer
+from data_utils.her_replay_buffer import HERReplayBuffer
+from data_utils.demo_dataset import DemoDataset
 
 
 class SACTrainer:
@@ -31,7 +39,11 @@ class SACTrainer:
     Trainer for Soft Actor-Critic.
 
     Args:
-        env: Gymnasium-compatible environment.
+        env: Gymnasium-compatible environment. For HER mode, env must
+             expose `info["achieved_goal"]` on reset/step, a
+             `compute_reward(achieved_goal, desired_goal, info)` method,
+             and an `extract_achieved_goal(flat_obs)` helper (the
+             FetchPickPlaceWrapper provides all three).
         evaluator: Evaluator for periodic env evaluation.
         config: dict with hyperparameters (see below).
         logger: optional WandBLogger.
@@ -41,7 +53,10 @@ class SACTrainer:
         Algorithm:
           gamma:             0.99    # discount factor
           tau:               0.005   # target network soft-update rate
-          target_entropy:    -action_dim  # entropy target (per Haarnoja)
+          target_entropy:    -action_dim/2  # entropy target.
+                                            # NB: -|A| (Haarnoja default) is
+                                            # unreachable for tanh-squashed
+                                            # Gaussians since H_max = |A|*log(2).
           init_alpha:        0.2     # initial entropy temperature
         Networks:
           obs_dim:           28
@@ -61,6 +76,13 @@ class SACTrainer:
           eval_episodes:     20
         Buffer:
           buffer_capacity:   200000
+          use_her:           False   # enable hindsight experience replay
+          her_k:             4       # relabels per original transition
+          her_strategy:      "future"
+          goal_dim:          3       # achieved_goal dimension (HER only)
+          demo_path:         None    # if set, pre-fill buffer with these
+                                     # demos at fit() start. Requires use_her
+                                     # for now (relabeled demos drive learning).
         Hardware:
           device:            "cuda" or "cpu"
     """
@@ -124,16 +146,46 @@ class SACTrainer:
             device=self.device, requires_grad=True,
         )
         self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=lr_alpha)
-        # Target entropy: -|A| is the Haarnoja recommendation
-        self.target_entropy = config.get("target_entropy", -float(self.action_dim))
-
-        # --- Replay buffer ---
-        self.buffer = ReplayBuffer(
-            capacity=config.get("buffer_capacity", 200_000),
-            obs_dim=self.obs_dim,
-            action_dim=self.action_dim,
-            device=self.device,
+        # Target entropy: default to -|A|/2. Note that -|A| (Haarnoja
+        # heuristic) is unreachable for a tanh-squashed Gaussian since
+        # achievable entropy is bounded by |A|*log(2).
+        self.target_entropy = config.get(
+            "target_entropy", -0.5 * float(self.action_dim)
         )
+
+        # --- Replay buffer (HER or vanilla) ---
+        self.use_her = bool(config.get("use_her", False))
+        if self.use_her:
+            goal_dim = config.get(
+                "goal_dim",
+                getattr(env, "goal_dim", 3),
+            )
+            goal_slice = getattr(
+                env, "goal_slice",
+                slice(self.obs_dim - goal_dim, self.obs_dim),
+            )
+            self.buffer = HERReplayBuffer(
+                capacity=config.get("buffer_capacity", 1_000_000),
+                obs_dim=self.obs_dim,
+                action_dim=self.action_dim,
+                goal_dim=goal_dim,
+                goal_slice=goal_slice,
+                compute_reward_fn=env.compute_reward,
+                k=config.get("her_k", 4),
+                strategy=config.get("her_strategy", "future"),
+                device=self.device,
+            )
+        else:
+            self.buffer = ReplayBuffer(
+                capacity=config.get("buffer_capacity", 200_000),
+                obs_dim=self.obs_dim,
+                action_dim=self.action_dim,
+                device=self.device,
+            )
+
+        # Demo pre-fill path (loaded at fit() start, not __init__, so the
+        # constructor stays cheap)
+        self.demo_path = config.get("demo_path")
 
         # --- Bookkeeping ---
         self.checkpoint_dir = Path(checkpoint_dir)
@@ -160,7 +212,58 @@ class SACTrainer:
                               self.q2.parameters()):
                 tp.data.mul_(1.0 - self.tau)
                 tp.data.add_(self.tau * sp.data)
-    
+
+    def _prefill_from_demos(self, demo_path):
+        """
+        Pre-fill the HER buffer with expert demonstrations.
+
+        Each demo episode is staged into the buffer's episode buffer and
+        then flushed, producing T originals + (T-1)*k HER relabels per
+        episode. The expert's actions are stored as-is; SAC's off-policy
+        nature means the critic can bootstrap from demonstration tuples
+        even though the actor is trained against fresh on-policy actions.
+
+        This is the DAPG-style "demos in buffer" technique (Rajeswaran 2018),
+        adapted for HER-augmented SAC. It addresses the FetchPickAndPlace
+        exploration bottleneck: random policy never grasps the cube, so
+        achieved_goals are constant within an episode and HER relabels are
+        trivial (always at the initial cube position). Demos provide the
+        diverse achieved_goal trajectories that HER needs to be useful.
+
+        Args:
+            demo_path: HDF5 file path; expected layout matches DemoDataset.
+        """
+        if not self.use_her:
+            raise ValueError(
+                "Demo pre-fill currently requires use_her=True. The HER "
+                "buffer's flush_episode() generates the relabeled "
+                "transitions that make demos useful for sparse-reward SAC."
+            )
+
+        print(f"Loading demos from {demo_path}...")
+        dataset = DemoDataset(demo_path)
+
+        for ep_idx in range(dataset.num_episodes):
+            start = int(dataset.episode_starts[ep_idx])
+            length = int(dataset.episode_lengths[ep_idx])
+            for t in range(length):
+                idx = start + t
+                # Demos don't store info["achieved_goal"]; recover it from
+                # the next_obs cube-position slice.
+                next_ag = self.env.extract_achieved_goal(dataset.next_obs[idx])
+                self.buffer.add(
+                    obs=dataset.obs[idx],
+                    action=dataset.action[idx],
+                    reward=float(dataset.reward[idx]),
+                    next_obs=dataset.next_obs[idx],
+                    done=float(dataset.done[idx]),
+                    next_achieved_goal=next_ag,
+                )
+            self.buffer.flush_episode()
+
+        print(f"  Pre-filled buffer with {dataset.num_episodes} demo episodes "
+              f"-> {len(self.buffer)} transitions (originals + HER relabels).")
+
     def update_critic(self, batch):
         """
         Update Q1 and Q2 by minimizing TD error:
@@ -186,17 +289,6 @@ class SACTrainer:
             # Soft Bellman target: subtract entropy term
             target_v = min_q_t - self.alpha * next_log_prob
             target_q = reward + self.gamma * (1.0 - done) * target_v
-
-            # --- DEBUG: shape check ---
-            if self.global_step == 1100:
-                print("[shape-check]",
-                    "min_q_t:", min_q_t.shape,
-                    "next_log_prob:", next_log_prob.shape,
-                    "target_v:", target_v.shape,
-                    "reward:", reward.shape,
-                    "done:", done.shape,
-                    "target_q:", target_q.shape,
-                    "q1_pred(next):", self.q1(obs, action).shape)
 
         # --- Q1 loss + step ---
         q1_pred = self.q1(obs, action)
@@ -239,19 +331,12 @@ class SACTrainer:
         q2_val = self.q2(obs, new_action)
         min_q = torch.min(q1_val, q2_val)
 
-        # --- DEBUG: shape check ---
-        if self.global_step == 1100:
-            print("[shape-check actor]",
-                  "log_prob:", log_prob.shape,
-                  "min_q:", min_q.shape)
-
         actor_loss = (self.alpha * log_prob - min_q).mean()
 
         self.actor_optim.zero_grad()
         actor_loss.backward()
         self.actor_optim.step()
 
-        # Return log_prob.detach() for use in alpha update (same batch)
         return {
             "actor_loss": actor_loss.item(),
             "log_prob_mean": log_prob.mean().item(),
@@ -262,24 +347,16 @@ class SACTrainer:
         """
         Update entropy temperature α.
 
-        Sign convention here: target_entropy is stored as a NEGATIVE
-        number (e.g., -action_dim = -4) following one common SAC formulation.
-        Effective "desired entropy" is -target_entropy (= +4).
+        target_entropy is stored as a NEGATIVE number (e.g., -2 for 4-D);
+        effective "desired entropy" is -target_entropy (= +2).
 
-        Loss derivation:
-            entropy(s) = -log_prob(s).mean()
-            We want entropy ≈ -target_entropy.
-            Gradient sign:
-              entropy < -target → need MORE exploration → α should INCREASE
-              entropy > -target → need LESS exploration → α should DECREASE
-
-        Equivalently, with log_prob_mean and target_entropy (negative):
-            alpha_loss = log_alpha · (log_prob_mean - target_entropy).detach()
-        Gradient w.r.t. log_alpha: (log_prob_mean - target_entropy)
+        Loss form:
+            alpha_loss = -log_alpha · (log_prob_mean - target_entropy).detach()
+        Gradient w.r.t. log_alpha: -(log_prob_mean - target_entropy)
             entropy high (log_prob very negative): log_prob_mean - target < 0
-                → grad < 0 → log_alpha decreases → α decreases ✓
+                → grad > 0 → log_alpha decreases → α decreases ✓
             entropy low (log_prob less negative): log_prob_mean - target > 0
-                → grad > 0 → log_alpha increases → α increases ✓
+                → grad < 0 → log_alpha increases → α increases ✓
         """
         log_prob_mean = log_prob_detached.mean()
         alpha_loss = -(self.log_alpha
@@ -327,7 +404,13 @@ class SACTrainer:
 
     def fit(self):
         """Main SAC training loop."""
-        print(f"SAC: {self.total_env_steps} env steps "
+        # --- 0. Optional demo pre-fill (DAPG-style) ---
+        if self.demo_path:
+            self._prefill_from_demos(self.demo_path)
+
+        her_str = " + HER" if self.use_her else ""
+        demo_str = " + demos" if self.demo_path else ""
+        print(f"SAC{her_str}{demo_str}: {self.total_env_steps} env steps "
               f"(warmup={self.warmup_steps}, "
               f"updates_per_step={self.updates_per_step}, "
               f"device={self.device})")
@@ -355,10 +438,17 @@ class SACTrainer:
             # --- 2. Env step ---
             next_obs, reward, terminated, truncated, info = self.env.step(action)
             done = terminated or truncated
-            # Store: for value bootstrapping, treat truncation as non-terminal
-            # (terminated = real terminal state; truncated = time limit only)
+            # Treat truncation as terminal (FetchPickAndPlace-v4 never emits
+            # terminated=True; episodes end via truncated=True at step 50).
             store_done = float(terminated or truncated)
-            self.buffer.add(obs, action, reward, next_obs, store_done)
+
+            # --- 3. Buffer add ---
+            if self.use_her:
+                next_achieved_goal = info["achieved_goal"]
+                self.buffer.add(obs, action, reward, next_obs,
+                                store_done, next_achieved_goal)
+            else:
+                self.buffer.add(obs, action, reward, next_obs, store_done)
 
             episode_return += reward
             episode_length += 1
@@ -366,6 +456,10 @@ class SACTrainer:
             obs = next_obs
 
             if done:
+                # HER: flush the staged episode (writes originals + relabels)
+                if self.use_her:
+                    self.buffer.flush_episode()
+
                 ep_success = float(info.get("is_success", 0.0) > 0.5)
                 recent_returns.append(episode_return)
                 recent_successes.append(ep_success)
@@ -378,7 +472,7 @@ class SACTrainer:
                 obs, info = self.env.reset(seed=self.config.get("seed", 42)
                                             + episode_count)
 
-            # --- 3. Gradient updates (after warmup) ---
+            # --- 4. Gradient updates (after warmup) ---
             if step >= self.warmup_steps and len(self.buffer) >= self.batch_size:
                 for _ in range(self.updates_per_step):
                     batch = self.buffer.sample(self.batch_size)
@@ -389,7 +483,7 @@ class SACTrainer:
                     self.gradient_updates += 1
                     step_metrics = {**critic_m, **actor_m, **alpha_m}
 
-            # --- 4. Periodic eval ---
+            # --- 5. Periodic eval ---
             if (step + 1) % self.eval_every_steps == 0 and step >= self.warmup_steps:
                 eval_metrics = self.evaluate()
                 success = eval_metrics["success_rate"]

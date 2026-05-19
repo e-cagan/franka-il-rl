@@ -1,10 +1,16 @@
-# SAC baseline config
+# SAC baseline config (no HER)
 
 # Algorithm
 gamma: 0.99
 tau: 0.005
 init_alpha: 0.2
-target_entropy: -2.0  # = -action_dim/2; -|A| unreachable for 4-D tanh-squashed Gaussian (max H ≈ 2.77)
+# -|A|/2 = -2. Note: -|A| (Haarnoja default) is unreachable for a 4-D
+# tanh-squashed Gaussian since H_max = 4*log(2) ≈ 2.77. Targeting -|A|
+# causes auto-alpha to runaway upward and Q to diverge.
+target_entropy: -2.0
+
+# Environment
+reward_type: "sparse"
 
 # Networks
 obs_dim: 28

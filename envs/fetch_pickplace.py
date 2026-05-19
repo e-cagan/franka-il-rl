@@ -9,6 +9,15 @@ Why this wrapper exists:
 - We pass through everything else (action space, reward, termination,
   truncation, info) unchanged.
 
+HER additions (Week 10):
+- info["achieved_goal"] is exposed on every reset/step so the HER buffer
+  can use it for hindsight relabeling without re-parsing the flat obs.
+- compute_reward() proxies to the underlying env so HER can recompute
+  rewards against synthetic goals.
+- extract_achieved_goal() extracts the cube position from a flat obs;
+  used when pre-filling the buffer from a demo HDF5 (where info dicts
+  are not stored).
+
 This wrapper is intentionally minimal. The underlying env already handles
 physics, IK, goal sampling, and success detection.
 """
@@ -17,6 +26,13 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 import gymnasium_robotics  # noqa: F401 — needed to register the envs
+
+
+# In FetchPickAndPlace's underlying 25-D observation, cube xyz (= achieved_goal)
+# sits at indices [3:6]. This is part of the gymnasium-robotics public layout
+# and stable across v3/v4. Codified here so the slice isn't re-discovered
+# at multiple call sites.
+_CUBE_POS_SLICE = slice(3, 6)
 
 
 class FetchPickPlaceWrapper(gym.Env):
@@ -33,6 +49,10 @@ class FetchPickPlaceWrapper(gym.Env):
     Action (4-D float32, [-1, 1]):
         - action[0:3]: end-effector delta position (dx, dy, dz)
         - action[3]:   gripper command (-1 = close, +1 = open)
+
+    Info dict (added by this wrapper):
+        - info["achieved_goal"]: 3-D float32 array, the achieved_goal
+          (object xyz) at the current observation. Used by HER.
 
     The underlying env runs at 25 Hz with max_episode_steps=50, so an
     episode is 2 seconds of sim time. The default reward is sparse: -1
@@ -60,6 +80,7 @@ class FetchPickPlaceWrapper(gym.Env):
         underlying_obs_shape = self._env.observation_space["observation"].shape[0]
         goal_shape = self._env.observation_space["desired_goal"].shape[0]
         self._obs_dim = underlying_obs_shape + goal_shape
+        self._goal_dim = goal_shape
 
         self.observation_space = spaces.Box(
             low=-np.inf,
@@ -67,6 +88,33 @@ class FetchPickPlaceWrapper(gym.Env):
             shape=(self._obs_dim,),
             dtype=np.float32,
         )
+
+    @property
+    def goal_dim(self):
+        """Dimensionality of achieved_goal / desired_goal (3 for Fetch)."""
+        return self._goal_dim
+
+    @property
+    def goal_slice(self):
+        """Slice locating desired_goal within the flat observation."""
+        return slice(self._obs_dim - self._goal_dim, self._obs_dim)
+
+    @staticmethod
+    def extract_achieved_goal(flat_obs):
+        """
+        Extract achieved_goal (cube xyz) from a flat observation.
+
+        Used when pre-filling the HER buffer from a demo HDF5 — the demo
+        format stores obs/action/reward/next_obs/done but does not retain
+        info["achieved_goal"]. Since achieved_goal for Fetch is the cube
+        position which sits at obs[3:6] of the underlying observation
+        (and the wrapper places that underlying obs at flat_obs[0:25]),
+        we can recover it by slicing.
+
+        Supports batched input: flat_obs of shape (..., obs_dim) returns
+        an array of shape (..., 3).
+        """
+        return flat_obs[..., _CUBE_POS_SLICE]
 
     def _flatten_obs(self, dict_obs):
         """Concatenate observation + desired_goal into a single flat array."""
@@ -76,13 +124,36 @@ class FetchPickPlaceWrapper(gym.Env):
         ]).astype(np.float32)
         return flat
 
+    def _augment_info(self, dict_obs, info):
+        """Attach achieved_goal to info for HER consumption."""
+        info["achieved_goal"] = dict_obs["achieved_goal"].astype(np.float32).copy()
+        return info
+
     def reset(self, *, seed=None, options=None):
         dict_obs, info = self._env.reset(seed=seed, options=options)
+        info = self._augment_info(dict_obs, info)
         return self._flatten_obs(dict_obs), info
 
     def step(self, action):
         dict_obs, reward, terminated, truncated, info = self._env.step(action)
+        info = self._augment_info(dict_obs, info)
         return self._flatten_obs(dict_obs), reward, terminated, truncated, info
+
+    def compute_reward(self, achieved_goal, desired_goal, info=None):
+        """
+        Proxy to the underlying env's compute_reward.
+
+        Used by HER to compute rewards against relabeled (synthetic) goals.
+        Fetch's compute_reward supports batched (N, 3) inputs as well as
+        single (3,) inputs.
+
+        Returns:
+            For sparse reward: 0.0 on success (distance <= threshold),
+            -1.0 otherwise. For dense reward: negative Euclidean distance.
+        """
+        if info is None:
+            info = {}
+        return self._env.unwrapped.compute_reward(achieved_goal, desired_goal, info)
 
     def render(self):
         return self._env.render()
@@ -108,8 +179,5 @@ class FetchPickPlaceWrapper(gym.Env):
         Must be called *after* a reset() or step(); reads from the most
         recent underlying observation.
         """
-        # Re-query the underlying env's current state
-        # gymnasium-robotics stores last obs internally; we go through
-        # the wrapper to get a fresh structured view.
         unwrapped = self._env.unwrapped
         return unwrapped._get_obs()

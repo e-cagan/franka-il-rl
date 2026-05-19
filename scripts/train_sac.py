@@ -3,6 +3,7 @@ SAC training script for FetchPickAndPlace.
 
 Usage:
     python scripts/train_sac.py --config configs/sac.yaml
+    python scripts/train_sac.py --config configs/sac_her.yaml
     python scripts/train_sac.py --config configs/sac.yaml --total-env-steps 5000 --no-wandb
 """
 
@@ -42,7 +43,11 @@ def train_sac(config, run_name=None, seed=42, use_wandb=True,
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    env = FetchPickPlaceWrapper(render_mode=None, reward_type=config.get("reward_type", "sparse"))
+    # Pass reward_type from config (default sparse). HER runs use sparse.
+    env = FetchPickPlaceWrapper(
+        render_mode=None,
+        reward_type=config.get("reward_type", "sparse"),
+    )
     evaluator = Evaluator(env, num_episodes=config.get("eval_episodes", 20))
 
     logger = None
