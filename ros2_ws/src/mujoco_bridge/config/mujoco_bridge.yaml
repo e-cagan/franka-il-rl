@@ -1,0 +1,16 @@
+# Default parameters for mujoco_bridge node.
+# Override at launch via: ros2 launch ... render:=true seed:=7
+
+mujoco_bridge:
+  ros__parameters:
+    # Environment
+    render: false              # Open MuJoCo viewer window
+    max_episode_steps: 50
+    seed: 42                   # Base seed; episode N uses seed + N
+    auto_reset: true
+    reward_type: "sparse"      # sparse | dense
+
+    # Topic remapping
+    obs_topic: "/sim/observation"
+    action_topic: "/sim/action"
+    info_topic: "/sim/episode_info"

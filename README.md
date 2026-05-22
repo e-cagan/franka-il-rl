@@ -83,7 +83,7 @@ franka-il-rl/
 
 ### Phase 3 — Deployment & Evaluation
 
-- [ ] **Week 11** — ROS2 inference node, MuJoCo-ROS2 bridge
+- [x] **Week 11** — ROS2 inference node, MuJoCo-ROS2 bridge
 - [ ] **Week 12** — ONNX export, TensorRT FP16 engine, latency benchmarking
 - [ ] **Week 13** — Docker training & inference containers, docker-compose orchestration
 - [ ] **Week 14** — Final ablation studies, technical report, README finalization

@@ -3,7 +3,7 @@ from glob import glob
 
 from setuptools import find_packages, setup
 
-package_name = 'policy_runner'
+package_name = 'mujoco_bridge'
 
 setup(
     name=package_name,
@@ -22,12 +22,12 @@ setup(
     zip_safe=True,
     maintainer='Emin Çağan Apaydın',
     maintainer_email='senin-emailin@example.com',
-    description='ROS2 node for running trained IL/RL policies via swappable inference backends (PyTorch / ONNX / TensorRT)',
+    description='MuJoCo simulation bridge: runs Fetch env, publishes observations, subscribes to actions',
     license='MIT',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'policy_inference_node = policy_runner.policy_inference_node:main',
+            'mujoco_bridge_node = mujoco_bridge.mujoco_bridge_node:main',
         ],
     },
 )

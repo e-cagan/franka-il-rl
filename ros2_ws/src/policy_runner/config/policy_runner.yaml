@@ -1,0 +1,16 @@
+# Default parameters for policy_inference node.
+# Override at launch via: ros2 launch ... checkpoint:=... backend:=...
+
+policy_inference:
+  ros__parameters:
+    # Required: path to model file
+    checkpoint_path: "data/checkpoints/bc/best_success.pt"
+
+    # Backend selection
+    backend: "torch"           # torch | onnx | tensorrt
+    device: "cpu"              # cpu | cuda
+    deterministic: true
+
+    # Topic remapping
+    obs_topic: "/sim/observation"
+    action_topic: "/sim/action"
