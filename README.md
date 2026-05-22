@@ -1,10 +1,10 @@
 # franka-il-rl
 
-End-to-end imitation learning to RL pipeline for robotic pick-and-place: Behavioral Cloning → DAgger → SAC fine-tuning on Franka Panda in MuJoCo, with ROS2 deployment and TensorRT inference.
+End-to-end imitation learning to RL pipeline for robotic pick-and-place: Behavioral Cloning → DAgger → SAC fine-tuning on Franka Panda in MuJoCo, with ROS2 deployment and multi-backend (PyTorch / ONNX / TensorRT) inference.
 
 ## Overview
 
-This project explores a complete imitation-to-reinforcement learning pipeline on a simulated robot arm. A scripted expert generates demonstrations in MuJoCo, which are first cloned via Behavioral Cloning, then refined interactively via DAgger, and finally trained from scratch with Soft Actor-Critic to evaluate online RL on the same task. The final BC-trained policy is exported to ONNX/TensorRT and deployed through a ROS2 Humble inference node, with the entire stack containerized via Docker.
+This project explores a complete imitation-to-reinforcement learning pipeline on a simulated robot arm. A scripted expert generates demonstrations in MuJoCo, which are first cloned via Behavioral Cloning, then refined interactively via DAgger, and finally trained from scratch with Soft Actor-Critic to evaluate online RL on the same task. The final BC-trained policy is exported to ONNX and deployed through a ROS2 Humble inference node behind a swappable backend interface (PyTorch / ONNX / TensorRT), with the entire stack containerized via Docker.
 
 The project emphasizes a side-by-side comparison of three learning paradigms (offline imitation, interactive imitation, online RL) under a single environment and evaluation harness, with controlled ablation studies on demonstration count, network capacity, expert design, and β scheduling. All experiments are reproducible via seed-controlled scripts and tracked in Weights & Biases.
 
@@ -43,7 +43,7 @@ BC and DAgger success rates are mean ± std across 3 seeds (42, 1, 7), 100 evalu
 - **Simulation:** MuJoCo 3.8, Gymnasium, gymnasium-robotics (FetchPickAndPlace-v4)
 - **Learning:** PyTorch, custom BC, DAgger, and SAC implementations
 - **Experiment tracking:** Weights & Biases
-- **Deployment (Phase 3):** ROS2 Humble, ONNX Runtime, TensorRT FP16
+- **Deployment (Phase 3):** ROS2 Humble, swappable inference backends — PyTorch / ONNX Runtime (selected: ONNX-CPU) / TensorRT EP
 - **Infrastructure (Phase 3):** Docker, docker-compose
 
 ## Project Structure
@@ -139,7 +139,7 @@ This stack is the foundation for the eventual Jetson Orin Nano deployment (Week 
 
 Built a two-package ROS2 Humble workspace to run trained policies through a message-passing deployment stack, decoupling the policy (inference) from the environment (simulation):
 
-- **`policy_runner`** — backend-agnostic inference node. Subscribes to `/sim/observation` (28-D `Float32MultiArray`), runs the policy, publishes to `/sim/action` (4-D). The actual obs→action computation is delegated to a pluggable `InferenceBackend` (Strategy pattern): `TorchBackend` is implemented for Week 11, with `OnnxBackend` and `TensorRTBackend` stubbed for Week 13. Swapping backends is a single launch argument (`backend:=torch|onnx|tensorrt`); the node code never changes.
+- **`policy_runner`** — backend-agnostic inference node. Subscribes to `/sim/observation` (28-D `Float32MultiArray`), runs the policy, publishes to `/sim/action` (4-D). The actual obs→action computation is delegated to a pluggable `InferenceBackend` (Strategy pattern): `TorchBackend` for Week 11, with `OnnxBackend` and `TensorRTBackend` added in Week 13. Swapping backends is a single launch argument (`backend:=torch|onnx|tensorrt`); the node code never changes.
 - **`mujoco_bridge`** — wraps the `FetchPickPlaceWrapper` env, publishes observations, subscribes to actions, broadcasts episode info. Drives a ping-pong control loop rather than a fixed-rate timer: reset → publish obs → receive action → step → publish next obs. For sim-only eval (no real-time deadline) this is simpler and faster than rate-limiting.
 
 Two non-obvious issues surfaced and were resolved:
@@ -373,7 +373,7 @@ docker compose -f docker/docker-compose.yml run --rm inference \
 
 **Why BC is unusually strong on this task**: The Fetch environment has a short horizon (50 steps), low-dimensional state-based observations (28-D), and a low-DoF action space (4-D EE delta + gripper). These properties minimize compounding error, which is BC's classical weakness. On image-based or longer-horizon tasks, the gap between BC and interactive methods (DAgger) or RL fine-tuning (SAC) is expected to widen.
 
-**Week 11 — ROS2 deployment and QoS gotchas**: The two most instructive bugs were both about message delivery, not policy logic. (1) A strictly turn-based (ping-pong) control loop deadlocks at startup if the first message is dropped, because each side then waits on the other indefinitely; latched (`TRANSIENT_LOCAL` + `RELIABLE`) QoS on the observation topic fixes this by delivering the most recent observation to late-joining subscribers. (2) MuJoCo's human-mode viewer needs main-thread event-loop pumping incompatible with ROS2's callback model, so interactive rendering was scoped out in favor of headless operation (which is what the Jetson deployment target needs anyway). The deployed stack sustains ~430 Hz CPU inference, ~17× the 25 Hz control requirement, so inference latency is not the bottleneck and the eventual TensorRT speedup is a margin-of-safety improvement rather than a necessity for this small policy.
+**Week 11 — ROS2 deployment and QoS gotchas**: The two most instructive bugs were both about message delivery, not policy logic. (1) A strictly turn-based (ping-pong) control loop deadlocks at startup if the first message is dropped, because each side then waits on the other indefinitely; latched (`TRANSIENT_LOCAL` + `RELIABLE`) QoS on the observation topic fixes this by delivering the most recent observation to late-joining subscribers. (2) MuJoCo's human-mode viewer needs main-thread event-loop pumping incompatible with ROS2's callback model, so interactive rendering was scoped out in favor of headless operation (which is what the Jetson deployment target needs anyway). The deployed stack sustains ~430 Hz CPU inference, ~17× the 25 Hz control requirement, so inference latency is not the bottleneck (Week 13's backend benchmark later pushed this to 71k Hz with ONNX-CPU and showed TensorRT to be unnecessary at this model scale).
 
 **Week 12 — containerize before optimizing**: Pulling Docker ahead of ONNX/TensorRT was a deliberate sequencing decision. Bare-metal deployment kept hitting a Python version conflict (training venv on 3.12, ROS2 Humble on 3.10) that produced numpy ABI failures whenever the two were bridged via `PYTHONPATH`. Rather than patch around it repeatedly, containerizing fixed the Python version per image (`ros:humble` pins 3.10 for inference; the PyTorch base pins its own for training) and gave the upcoming version-sensitive TensorRT work a clean, reproducible environment. The inference image installs PyTorch from the cu121 wheel — which bundles its own CUDA runtime — so GPU works through only the host driver and nvidia container runtime, with no system CUDA install. The container also builds the ROS2 workspace into container-local `/tmp` rather than the bind-mounted `ros2_ws/build`, keeping host and container build trees from contaminating each other.
 
