@@ -1,5 +1,9 @@
 # franka-il-rl
 
+![Behavioral-cloning policy rollout](assets/rollout_montage.gif)
+
+*A from-scratch behavioral-cloning policy (99.3% success) placing the cube across varied initial conditions, running through the containerized ROS2 inference pipeline.*
+
 End-to-end imitation learning to RL pipeline for robotic pick-and-place: Behavioral Cloning → DAgger → SAC fine-tuning on Franka Panda in MuJoCo, with ROS2 deployment and multi-backend (PyTorch / ONNX / TensorRT) inference.
 
 ## Overview
@@ -7,6 +11,19 @@ End-to-end imitation learning to RL pipeline for robotic pick-and-place: Behavio
 This project explores a complete imitation-to-reinforcement learning pipeline on a simulated robot arm. A scripted expert generates demonstrations in MuJoCo, which are first cloned via Behavioral Cloning, then refined interactively via DAgger, and finally trained from scratch with Soft Actor-Critic to evaluate online RL on the same task. The final BC-trained policy is exported to ONNX and deployed through a ROS2 Humble inference node behind a swappable backend interface (PyTorch / ONNX / TensorRT), with the entire stack containerized via Docker.
 
 The project emphasizes a side-by-side comparison of three learning paradigms (offline imitation, interactive imitation, online RL) under a single environment and evaluation harness, with controlled ablation studies on demonstration count, network capacity, expert design, and β scheduling. All experiments are reproducible via seed-controlled scripts and tracked in Weights & Biases.
+
+```mermaid
+flowchart LR
+    E[Scripted Expert] -->|800 demos| D[(HDF5<br/>demonstrations)]
+    D --> BC[Behavioral Cloning<br/>99.3%]
+    D --> DA[DAgger<br/>82.7% from 100 demos]
+    D --> SAC[SAC + HER + demos<br/>documented neg. result]
+    BC -->|selected policy| ONNX[ONNX export<br/>parity-verified]
+    ONNX --> ROS[ROS2 stack<br/>policy_runner + mujoco_bridge]
+    ROS --> DK[Docker<br/>train + inference images]
+```
+
+All training and inference run inside Docker; the deployed policy serves inference at 71k Hz (ONNX-CPU) through the ROS2 stack.
 
 ## Current Status
 
@@ -86,7 +103,7 @@ franka-il-rl/
 - [x] **Week 11** — ROS2 inference node, MuJoCo-ROS2 bridge
 - [x] **Week 12** — Docker training & inference containers, docker-compose orchestration *(pulled ahead of ONNX/TensorRT to fix the host Python/ROS2 environment conflict first)*
 - [x] **Week 13** — ONNX export, multi-backend inference, latency benchmarking (TensorRT integrated; found unnecessary at this model scale)
-- [ ] **Week 14** — Final ablation studies, technical report, README finalization
+- [x] **Week 14** — Final ablation studies, technical report, README finalization
 
 *Note: Weeks 12 and 13 were swapped from the original plan. Containerizing first eliminated a host-environment Python version conflict (venv 3.12 vs ROS2 3.10) that was repeatedly stalling deployment work, giving ONNX/TensorRT a clean fixed-version environment to build in.*
 
