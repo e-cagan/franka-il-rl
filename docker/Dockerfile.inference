@@ -37,6 +37,19 @@ RUN pip3 install --no-cache-dir \
         "h5py" \
         "pyyaml"
 
+# Inference runtimes for Week 13 backends:
+#   - onnxruntime-gpu: ONNX backend (CPU + CUDA execution providers).
+#     Includes the CPU provider, so OnnxBackend works with device:=cpu too.
+#   - tensorrt: required by onnxruntime-gpu's TensorrtExecutionProvider.
+# These are the most version-sensitive deps in the project (must align with
+# the CUDA 12.x runtime from the torch cu121 wheel). If the TRT EP fails to
+# load at runtime, the backend's provider list falls back to CUDA/CPU, so
+# the pipeline still runs — only the TRT latency number is unavailable.
+RUN pip3 install --no-cache-dir \
+        "onnx" \
+        "onnxruntime-gpu" \
+        "tensorrt"
+
 WORKDIR /workspace
 
 COPY docker/entrypoint_inference.sh /entrypoint.sh

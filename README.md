@@ -10,7 +10,7 @@ The project emphasizes a side-by-side comparison of three learning paradigms (of
 
 ## Current Status
 
-**Phase 2 complete. Phase 3 in progress** — ROS2 deployment pipeline (Week 11) and Docker containerization (Week 12) done; ONNX/TensorRT inference (Week 13) and final report (Week 14) remain. A trained policy now runs end-to-end through a containerized ROS2 stack.
+**Phase 2 complete. Phase 3 nearly complete** — ROS2 deployment (Week 11), Docker containerization (Week 12), and ONNX/multi-backend inference with latency benchmarking (Week 13) all done. A trained policy runs end-to-end through a containerized ROS2 stack at 71k Hz (ONNX-CPU). Only the final report and README polish (Week 14) remain.
 
 ### Headline Results (100-episode robust evaluation, 3 seeds)
 
@@ -85,10 +85,35 @@ franka-il-rl/
 
 - [x] **Week 11** — ROS2 inference node, MuJoCo-ROS2 bridge
 - [x] **Week 12** — Docker training & inference containers, docker-compose orchestration *(pulled ahead of ONNX/TensorRT to fix the host Python/ROS2 environment conflict first)*
-- [ ] **Week 13** — ONNX export, TensorRT FP16 engine, latency benchmarking
+- [x] **Week 13** — ONNX export, multi-backend inference, latency benchmarking (TensorRT integrated; found unnecessary at this model scale)
 - [ ] **Week 14** — Final ablation studies, technical report, README finalization
 
 *Note: Weeks 12 and 13 were swapped from the original plan. Containerizing first eliminated a host-environment Python version conflict (venv 3.12 vs ROS2 3.10) that was repeatedly stalling deployment work, giving ONNX/TensorRT a clean fixed-version environment to build in.*
+
+## Week 13 Results in Detail (ONNX + Inference Backends)
+
+### Multi-Backend Inference and the GPU-Overhead Crossover
+
+The Strategy-pattern `InferenceBackend` from Week 11 was filled out with two more backends so the policy can run through PyTorch, ONNX Runtime, or TensorRT with a single launch-arg change (`backend:=torch|onnx|tensorrt`) and no node-code change:
+
+- **`scripts/export_onnx.py`** exports the BC policy to ONNX (opset 17, dynamic batch axis) and verifies numerical parity against the PyTorch forward pass. Parity: max abs diff 5.5e-6 over 200 random observations (fp32 export reordering noise; well under the 1e-4 tolerance).
+- **`OnnxBackend`** runs the `.onnx` via ONNX Runtime (CPU or CUDA execution provider). Verified to reproduce the BC baseline through the full ROS2 stack.
+- **`TensorRTBackend`** runs through ONNX Runtime's TensorRT EP (FP16, with engine caching), falling back to CUDA/CPU if the TRT libraries are unavailable.
+
+### Latency Benchmark (batch=1, 5000 iters, RTX 3050 Ti laptop)
+
+| Backend | Throughput | Mean latency |
+|---|---|---|
+| **onnx-cpu** | **71,069 Hz** | 0.014 ms |
+| onnx-cuda | 16,413 Hz | 0.061 ms |
+| torch-cpu | 15,813 Hz | 0.063 ms |
+| torch-cuda | 7,144 Hz | 0.140 ms |
+
+**The headline finding: GPU execution is *slower* than CPU for this policy, and TensorRT is unnecessary.** The policy is a tiny MLP (~140k params, 28→4). At batch=1, the host↔device memory transfer cost dominates the trivial compute, so both CUDA backends are 4–10× slower than their CPU counterparts. ONNX-CPU is fastest at 71k Hz — **2,800× the 25 Hz control requirement**, with a 0.014 ms latency that is 0.035% of the 40 ms per-step budget.
+
+TensorRT was integrated (`TensorRTBackend` + provider options), but the TRT execution provider failed to load due to a `libnvinfer.so.10` library-path misalignment between `onnxruntime-gpu` and the `tensorrt` pip package — a known version-coupling issue. Rather than chase the fix, the benchmark made the engineering decision clear: even a successful TensorRT FP16 build (perhaps ~100k Hz) would be indistinguishable from ONNX-CPU's 71k Hz against a 25 Hz target. **ONNX-CPU was selected for deployment**, and TensorRT was documented as integrated-but-unnecessary at this model scale. The TensorRT path remains relevant for the eventual Jetson Orin Nano target, where it would be built on-device.
+
+This is a deliberate avoidance of premature optimization: the right backend was chosen by measurement, not by reaching for the most sophisticated tool available.
 
 ## Week 12 Results in Detail (Docker)
 
@@ -315,6 +340,17 @@ docker compose -f docker/docker-compose.yml run --rm inference
 docker compose -f docker/docker-compose.yml run --rm inference \
     ros2 launch policy_runner full_pipeline.launch.py \
     device:=cuda checkpoint:=/workspace/data/checkpoints/dagger/dagger_init100_seed42/last.pt
+
+# Export a checkpoint to ONNX (with parity check) and run via the ONNX backend
+docker compose -f docker/docker-compose.yml run --rm inference \
+    python3 scripts/export_onnx.py --checkpoint /workspace/data/checkpoints/bc/bc_seed42/last.pt
+docker compose -f docker/docker-compose.yml run --rm inference \
+    ros2 launch policy_runner full_pipeline.launch.py \
+    backend:=onnx checkpoint:=/workspace/data/checkpoints/bc/bc_seed42/last.onnx
+
+# Benchmark inference latency across torch / onnx / tensorrt backends
+docker compose -f docker/docker-compose.yml run --rm inference \
+    python3 scripts/benchmark_latency.py --checkpoint /workspace/data/checkpoints/bc/bc_seed42/last.pt
 ```
 
 ## Project Notes
@@ -340,6 +376,8 @@ docker compose -f docker/docker-compose.yml run --rm inference \
 **Week 11 — ROS2 deployment and QoS gotchas**: The two most instructive bugs were both about message delivery, not policy logic. (1) A strictly turn-based (ping-pong) control loop deadlocks at startup if the first message is dropped, because each side then waits on the other indefinitely; latched (`TRANSIENT_LOCAL` + `RELIABLE`) QoS on the observation topic fixes this by delivering the most recent observation to late-joining subscribers. (2) MuJoCo's human-mode viewer needs main-thread event-loop pumping incompatible with ROS2's callback model, so interactive rendering was scoped out in favor of headless operation (which is what the Jetson deployment target needs anyway). The deployed stack sustains ~430 Hz CPU inference, ~17× the 25 Hz control requirement, so inference latency is not the bottleneck and the eventual TensorRT speedup is a margin-of-safety improvement rather than a necessity for this small policy.
 
 **Week 12 — containerize before optimizing**: Pulling Docker ahead of ONNX/TensorRT was a deliberate sequencing decision. Bare-metal deployment kept hitting a Python version conflict (training venv on 3.12, ROS2 Humble on 3.10) that produced numpy ABI failures whenever the two were bridged via `PYTHONPATH`. Rather than patch around it repeatedly, containerizing fixed the Python version per image (`ros:humble` pins 3.10 for inference; the PyTorch base pins its own for training) and gave the upcoming version-sensitive TensorRT work a clean, reproducible environment. The inference image installs PyTorch from the cu121 wheel — which bundles its own CUDA runtime — so GPU works through only the host driver and nvidia container runtime, with no system CUDA install. The container also builds the ROS2 workspace into container-local `/tmp` rather than the bind-mounted `ros2_ws/build`, keeping host and container build trees from contaminating each other.
+
+**Week 13 — measure before optimizing**: The inference-backend benchmark produced the project's clearest engineering lesson. The intuition going in was "GPU and TensorRT will be fastest." The measurement said the opposite: for a ~140k-param MLP at batch=1, ONNX-CPU runs at 71k Hz while both CUDA backends run 4–10× slower, because host↔device transfer overhead dwarfs the negligible compute. TensorRT integration hit a `libnvinfer.so.10` path issue between `onnxruntime-gpu` and the `tensorrt` pip wheel, but the benchmark had already shown TRT would be pointless here — 71k Hz is already 2,800× the 25 Hz control rate. ONNX-CPU was selected for deployment and the GPU-overhead crossover was documented as the rationale. The broader principle: the correct optimization target is found by profiling, and the most sophisticated tool (TensorRT) is not always the right one — at small model scale it is pure overhead. The TensorRT path stays in the codebase for the Jetson target, where engines are built on-device.
 
 **A note on in-training vs robust evaluation**: Across all ablations, in-training success rate (20 episodes, seeds 1000+) systematically overestimated robust success rate (100 episodes, seeds 10000+). The gap was small for well-tuned configurations (linear β DAgger: ~1 pp) but large for marginal ones (exponential β: 28 pp). This is a generalizable lesson about evaluation methodology: small in-distribution eval suites should never be the basis for algorithmic conclusions.
 
