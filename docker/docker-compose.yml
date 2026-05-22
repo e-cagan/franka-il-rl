@@ -1,0 +1,63 @@
+# Docker Compose for franka-il-rl.
+#
+# All commands assume you run from the repo root:
+#   docker compose -f docker/docker-compose.yml build
+#   docker compose -f docker/docker-compose.yml run --rm train python scripts/train_sac.py --config configs/sac_her.yaml
+#   docker compose -f docker/docker-compose.yml run --rm inference            # full pipeline, BC baseline
+#   docker compose -f docker/docker-compose.yml up inference                  # same, foreground
+#
+# GPU passthrough uses the Compose v2 `deploy.resources` form. If your
+# Compose is older and ignores it, replace each `deploy:` block with a
+# top-level `runtime: nvidia` on the service.
+
+services:
+  train:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.train
+    image: franka-il-rl-train:latest
+    volumes:
+      - ../:/workspace
+    working_dir: /workspace
+    environment:
+      - MUJOCO_GL=egl
+      # Pass through your W&B key from the host shell if set; harmless if unset.
+      - WANDB_API_KEY=${WANDB_API_KEY:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # Default = CUDA sanity check. Override at runtime, e.g.:
+    #   docker compose -f docker/docker-compose.yml run --rm train \
+    #       python scripts/train_bc.py --config configs/bc.yaml
+    command: ["python", "-c", "import torch; print('CUDA available:', torch.cuda.is_available())"]
+
+  inference:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.inference
+    image: franka-il-rl-inference:latest
+    # host networking lets you `ros2 topic echo /sim/episode_info` from the
+    # host, and keeps DDS discovery trivial for the two in-container nodes.
+    network_mode: host
+    volumes:
+      - ../:/workspace
+    environment:
+      - MUJOCO_GL=egl
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # Default = full pipeline, BC baseline, CPU inference. Override args, e.g.:
+    #   docker compose -f docker/docker-compose.yml run --rm inference \
+    #       ros2 launch policy_runner full_pipeline.launch.py \
+    #       backend:=torch device:=cuda \
+    #       checkpoint:=/workspace/data/checkpoints/dagger/.../last.pt
+    command: ["ros2", "launch", "policy_runner", "full_pipeline.launch.py",
+              "checkpoint:=/workspace/data/checkpoints/bc/bc_seed42/last.pt"]

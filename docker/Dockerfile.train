@@ -1,0 +1,42 @@
+# Training image: PyTorch + MuJoCo + Gymnasium for BC / DAgger / SAC.
+# No ROS2 here — training is fully decoupled from deployment.
+#
+# Base provides torch 2.5.1 + CUDA 12.1 runtime + cuDNN. Works with the
+# host's newer driver (CUDA 13-capable) via backward compatibility.
+FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV MUJOCO_GL=egl
+ENV PYTHONUNBUFFERED=1
+
+# System libs: MuJoCo headless rendering (EGL/OSMesa) + HDF5 for demos
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libegl1 \
+        libosmesa6 \
+        libglfw3 \
+        libhdf5-dev \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps. torch is already in the base image; we don't touch it.
+# numpy pinned to 1.26.x for torch / gymnasium-robotics compatibility
+# (matches the project's established constraint).
+RUN pip install --no-cache-dir \
+        "numpy==1.26.4" \
+        "gymnasium>=0.29" \
+        "gymnasium-robotics>=1.3.0" \
+        "mujoco>=3.1" \
+        "h5py" \
+        "pyyaml" \
+        "wandb" \
+        "tqdm"
+
+WORKDIR /workspace
+
+COPY docker/entrypoint_train.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+# Default command is a CUDA sanity check; override at runtime.
+CMD ["python", "-c", "import torch; print('CUDA available:', torch.cuda.is_available())"]

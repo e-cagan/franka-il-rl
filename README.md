@@ -10,7 +10,7 @@ The project emphasizes a side-by-side comparison of three learning paradigms (of
 
 ## Current Status
 
-**Phase 2 complete**. Deployment pipeline (Phase 3) in progress.
+**Phase 2 complete. Phase 3 in progress** — ROS2 deployment pipeline (Week 11) and Docker containerization (Week 12) done; ONNX/TensorRT inference (Week 13) and final report (Week 14) remain. A trained policy now runs end-to-end through a containerized ROS2 stack.
 
 ### Headline Results (100-episode robust evaluation, 3 seeds)
 
@@ -84,9 +84,45 @@ franka-il-rl/
 ### Phase 3 — Deployment & Evaluation
 
 - [x] **Week 11** — ROS2 inference node, MuJoCo-ROS2 bridge
-- [ ] **Week 12** — ONNX export, TensorRT FP16 engine, latency benchmarking
-- [ ] **Week 13** — Docker training & inference containers, docker-compose orchestration
+- [x] **Week 12** — Docker training & inference containers, docker-compose orchestration *(pulled ahead of ONNX/TensorRT to fix the host Python/ROS2 environment conflict first)*
+- [ ] **Week 13** — ONNX export, TensorRT FP16 engine, latency benchmarking
 - [ ] **Week 14** — Final ablation studies, technical report, README finalization
+
+*Note: Weeks 12 and 13 were swapped from the original plan. Containerizing first eliminated a host-environment Python version conflict (venv 3.12 vs ROS2 3.10) that was repeatedly stalling deployment work, giving ONNX/TensorRT a clean fixed-version environment to build in.*
+
+## Week 12 Results in Detail (Docker)
+
+### Containerization — Two Images, Fixed Environments
+
+Deployment work on bare metal repeatedly stalled on a Python version conflict: the project's training venv runs Python 3.12, while ROS2 Humble is hard-coupled to the system's Python 3.10. Sharing a `PYTHONPATH` between them produced numpy C-extension ABI failures (`No module named 'numpy.core._multiarray_umath'`) because 3.10 cannot load extensions compiled for 3.12. Containerization was pulled ahead of the ONNX/TensorRT work specifically to remove this class of problem before adding more version-sensitive dependencies.
+
+Two images, intentionally not sharing a base (different needs):
+
+- **`Dockerfile.train`** — base `pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime`. No ROS2. Carries torch + CUDA, gymnasium-robotics, mujoco, h5py, wandb. Runs BC/DAgger/SAC training and demo collection. Verified `CUDA available: True` with `--gpus all` passthrough on the RTX 3050 Ti.
+- **`Dockerfile.inference`** — base `ros:humble` (Ubuntu 22.04, Python 3.10 fixed — this *is* the fix). PyTorch installed from the cu121 wheel (bundles its own CUDA runtime, so no system CUDA needed; works through the host driver + nvidia container runtime). Builds the ROS2 workspace and runs the full inference pipeline. Verified to reproduce the Week 11 result (BC baseline, success through the containerized stack) identically.
+
+Design decisions:
+- **Container builds the ROS2 workspace into `/tmp`, not the volume-mounted `ros2_ws/build`.** The repo is bind-mounted for live code editing, which means the container sees the host's build artifacts. Building into container-local `/tmp/colcon_build` and `/tmp/colcon_install` keeps host and container build trees fully separate, preventing cross-environment contamination.
+- **Inference uses host networking** so `ros2 topic echo` works from the host and DDS discovery between the two in-container nodes is trivial.
+- **`docker-compose.yml`** declares both services with GPU reservations and `MUJOCO_GL=egl` for headless rendering. Training and inference are run via `docker compose run --rm <service> <command>`, with the default inference command running the full pipeline on the BC baseline.
+
+This stack is the foundation for the eventual Jetson Orin Nano deployment (Week 13+): the inference image's structure (ROS2 + bundled-CUDA torch + headless MuJoCo) ports to an `l4t-base` ARM image with the same entrypoint logic.
+
+## Week 11 Results in Detail (ROS2 Deployment)
+
+### Inference Node + MuJoCo Bridge — Policy Running Through ROS2
+
+Built a two-package ROS2 Humble workspace to run trained policies through a message-passing deployment stack, decoupling the policy (inference) from the environment (simulation):
+
+- **`policy_runner`** — backend-agnostic inference node. Subscribes to `/sim/observation` (28-D `Float32MultiArray`), runs the policy, publishes to `/sim/action` (4-D). The actual obs→action computation is delegated to a pluggable `InferenceBackend` (Strategy pattern): `TorchBackend` is implemented for Week 11, with `OnnxBackend` and `TensorRTBackend` stubbed for Week 13. Swapping backends is a single launch argument (`backend:=torch|onnx|tensorrt`); the node code never changes.
+- **`mujoco_bridge`** — wraps the `FetchPickPlaceWrapper` env, publishes observations, subscribes to actions, broadcasts episode info. Drives a ping-pong control loop rather than a fixed-rate timer: reset → publish obs → receive action → step → publish next obs. For sim-only eval (no real-time deadline) this is simpler and faster than rate-limiting.
+
+Two non-obvious issues surfaced and were resolved:
+
+1. **Startup race / control-loop stall.** The bridge publishes its first observation during `__init__`, before the inference node (a separate process) has finished DDS discovery and subscription setup. With best-effort QoS, that first observation was dropped, and since the loop is strictly turn-based, both nodes then waited on each other forever. Fixed by making the observation topic **latched** (`TRANSIENT_LOCAL` durability) and `RELIABLE` on both publisher and subscriber: a late-joining subscriber still receives the most recent observation, and no mid-loop message is dropped.
+2. **Render deadlock.** MuJoCo's human-mode viewer needs the main thread to pump its event loop; calling `env.render()` inside the step callback (or not at all) froze the GUI ("not responding"). Resolved for headless operation (the deployment default, since the Jetson target has no display); interactive rendering is treated as a separate dev-only concern.
+
+Verified end to end: the BC baseline (`bc_seed42`) runs at 200/200 success through the full ROS2 stack, with CPU inference sustaining ~430 Hz (well above the 25 Hz control rate). Both headless and rendered modes confirmed working.
 
 ## Week 10 Results in Detail
 
@@ -257,6 +293,30 @@ python scripts/train_sac.py --config configs/sac_her.yaml
 python scripts/plot_ablations.py
 ```
 
+### Containerized (Week 12+)
+
+All training and inference can run in Docker, avoiding host environment setup:
+
+```bash
+# Build both images (first build ~3 min; layers cache afterward)
+docker compose -f docker/docker-compose.yml build
+
+# GPU sanity check (expects "CUDA available: True")
+docker compose -f docker/docker-compose.yml run --rm train
+
+# Train in-container (override the default command)
+docker compose -f docker/docker-compose.yml run --rm train \
+    python scripts/train_sac.py --config configs/sac_her.yaml
+
+# Run the full ROS2 inference pipeline (BC baseline by default)
+docker compose -f docker/docker-compose.yml run --rm inference
+
+# ...with a different checkpoint / GPU inference
+docker compose -f docker/docker-compose.yml run --rm inference \
+    ros2 launch policy_runner full_pipeline.launch.py \
+    device:=cuda checkpoint:=/workspace/data/checkpoints/dagger/dagger_init100_seed42/last.pt
+```
+
 ## Project Notes
 
 **Week 3 pivot (May 2026)**: Initial attempt used a custom MuJoCo environment with Franka Panda and mink IK. After significant debugging of PD controller instability and IK convergence issues, switched to the standard `gymnasium-robotics` FetchPickAndPlace environment. This trades robot specificity for a battle-tested baseline, allowing focus on the core IL/RL algorithms (BC, DAgger, SAC) and the deployment pipeline. The legacy Franka code is preserved under `*_legacy.py` suffixes for reference.
@@ -276,6 +336,10 @@ python scripts/plot_ablations.py
 **Week 10 — SAC + HER + demos as a documented negative result**: HER (Andrychowicz 2017) and DAPG-style demo pre-fill (Rajeswaran 2018) were implemented to address the sparse-reward exploration bottleneck. Both are mechanically correct and numerically stable. Plain HER fails because random rollouts produce trivial relabels (cube never moves, synthetic goals collapse to the spawn position). HER + demos fails because of offline-to-online distribution shift: the critic learns from demo (s, a, r, s') tuples but the random-initialized actor samples actions far from the demo support, where critic estimates are unreliable, and the system stabilizes in a do-nothing equilibrium (return -45, alpha ~0.27). This is the canonical regime for purpose-built offline-to-online algorithms (AWAC, IQL, CalQL), which lie outside this project's scope. The SAC, HER, and demo-prefill implementations remain in the codebase as reference and as the basis for any future offline-RL extension.
 
 **Why BC is unusually strong on this task**: The Fetch environment has a short horizon (50 steps), low-dimensional state-based observations (28-D), and a low-DoF action space (4-D EE delta + gripper). These properties minimize compounding error, which is BC's classical weakness. On image-based or longer-horizon tasks, the gap between BC and interactive methods (DAgger) or RL fine-tuning (SAC) is expected to widen.
+
+**Week 11 — ROS2 deployment and QoS gotchas**: The two most instructive bugs were both about message delivery, not policy logic. (1) A strictly turn-based (ping-pong) control loop deadlocks at startup if the first message is dropped, because each side then waits on the other indefinitely; latched (`TRANSIENT_LOCAL` + `RELIABLE`) QoS on the observation topic fixes this by delivering the most recent observation to late-joining subscribers. (2) MuJoCo's human-mode viewer needs main-thread event-loop pumping incompatible with ROS2's callback model, so interactive rendering was scoped out in favor of headless operation (which is what the Jetson deployment target needs anyway). The deployed stack sustains ~430 Hz CPU inference, ~17× the 25 Hz control requirement, so inference latency is not the bottleneck and the eventual TensorRT speedup is a margin-of-safety improvement rather than a necessity for this small policy.
+
+**Week 12 — containerize before optimizing**: Pulling Docker ahead of ONNX/TensorRT was a deliberate sequencing decision. Bare-metal deployment kept hitting a Python version conflict (training venv on 3.12, ROS2 Humble on 3.10) that produced numpy ABI failures whenever the two were bridged via `PYTHONPATH`. Rather than patch around it repeatedly, containerizing fixed the Python version per image (`ros:humble` pins 3.10 for inference; the PyTorch base pins its own for training) and gave the upcoming version-sensitive TensorRT work a clean, reproducible environment. The inference image installs PyTorch from the cu121 wheel — which bundles its own CUDA runtime — so GPU works through only the host driver and nvidia container runtime, with no system CUDA install. The container also builds the ROS2 workspace into container-local `/tmp` rather than the bind-mounted `ros2_ws/build`, keeping host and container build trees from contaminating each other.
 
 **A note on in-training vs robust evaluation**: Across all ablations, in-training success rate (20 episodes, seeds 1000+) systematically overestimated robust success rate (100 episodes, seeds 10000+). The gap was small for well-tuned configurations (linear β DAgger: ~1 pp) but large for marginal ones (exponential β: 28 pp). This is a generalizable lesson about evaluation methodology: small in-distribution eval suites should never be the basis for algorithmic conclusions.
 

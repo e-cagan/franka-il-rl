@@ -1,0 +1,27 @@
+# Keep the Docker build context small and clean. Volume mounts at runtime
+# still provide everything; this only affects what gets sent to the daemon
+# at build time (and prevents host-built artifacts leaking into images).
+
+venv/
+wandb/
+__pycache__/
+**/__pycache__/
+*.pyc
+.git/
+.pytest_cache/
+
+# Host-built ROS2 artifacts (container rebuilds into /tmp anyway)
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# Large data — checkpoints and demos come in via volume mount, not COPY
+data/checkpoints/
+data/demonstrations/
+*.hdf5
+*.pt
+
+# Editor / OS cruft
+.vscode/
+.idea/
+.DS_Store
